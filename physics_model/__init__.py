@@ -26,7 +26,8 @@ Typical use::
         ratings=WORKBOOK_EXAMPLE_RATINGS,
         inventory=WORKBOOK_EXAMPLE_INVENTORY,
     ))
-    print(result.recommended.describe())
+    chosen = result.recommended or result.best_unconfirmed
+    print(chosen.describe() if chosen else result.caveats)
 
 No part of this package has been checked against measured waveforms, because no
 measured data was supplied. It is decision support for a qualified engineer, and
@@ -44,7 +45,9 @@ from physics_model.calculations import (
     front_time_floor,
     front_time_is_reachable,
     generator_capacitance,
+    ideal_marx_voltage,
     ideal_output_voltage,
+    loaded_crest_estimate,
     predict,
     required_stages,
     series_equivalent_capacitance,
@@ -55,6 +58,16 @@ from physics_model.calculations import (
     theoretical_total_front_resistance,
     theoretical_total_tail_resistance,
     total_load_capacitance,
+    workbook_echo_crest,
+)
+from physics_model.targets import (
+    FRONT_TIME_LIGHTNING_DEFINITION,
+    FRONT_TIME_SWITCHING_DEFINITION,
+    PEAK_VOLTAGE_DEFINITION,
+    TAIL_TIME_DEFINITION,
+    WORKBOOK_BASELINE,
+    TimingDefinition,
+    timing_definition,
 )
 from physics_model.capacitor_stress import (
     CapacitorStressReport,
@@ -163,7 +176,10 @@ __all__ = [
     "total_load_capacitance",
     "required_stages",
     "charging_voltage_per_stage",
+    "ideal_marx_voltage",
     "ideal_output_voltage",
+    "loaded_crest_estimate",
+    "workbook_echo_crest",
     "stage_utilisation",
     "generator_capacitance",
     "series_equivalent_capacitance",
@@ -177,6 +193,14 @@ __all__ = [
     "theoretical_total_tail_resistance",
     "snap_to_grid",
     "predict",
+    # targets
+    "FRONT_TIME_LIGHTNING_DEFINITION",
+    "FRONT_TIME_SWITCHING_DEFINITION",
+    "PEAK_VOLTAGE_DEFINITION",
+    "TAIL_TIME_DEFINITION",
+    "WORKBOOK_BASELINE",
+    "TimingDefinition",
+    "timing_definition",
     # waveform
     "DoubleExponential",
     "WaveformParameters",

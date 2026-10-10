@@ -72,6 +72,7 @@ class SafetyConstraint:
     description: str
     satisfied: bool | None
     detail: str
+    applicable: bool = True
 
     @property
     def violated(self) -> bool:
@@ -80,6 +81,11 @@ class SafetyConstraint:
     @property
     def indeterminate(self) -> bool:
         return self.satisfied is None
+
+    @property
+    def blocks_confirmed_safety(self) -> bool:
+        """Unevaluated applicable checks keep a candidate out of the safe set."""
+        return self.applicable and (self.violated or self.indeterminate)
 
 
 @dataclass(frozen=True)
@@ -129,9 +135,10 @@ class ValidationReport:
 
     @property
     def safety_verdict(self) -> Verdict:
-        if any(c.violated for c in self.safety):
+        applicable = [c for c in self.safety if c.applicable]
+        if any(c.violated for c in applicable):
             return Verdict.UNSAFE
-        if any(c.indeterminate for c in self.safety):
+        if any(c.indeterminate for c in applicable):
             return Verdict.INDETERMINATE
         return Verdict.SAFE
 
@@ -147,18 +154,32 @@ class ValidationReport:
     def buildable(self) -> bool:
         """Whether no hard constraint is actually violated.
 
-        Distinct from ``safety_verdict is SAFE``: a configuration with unevaluated
-        capacitor ratings is buildable but not confirmed safe. The optimiser keeps
-        buildable candidates and reports the unevaluated checks alongside them.
+        Distinct from ``confirmed_safe``: unevaluated ratings leave a configuration
+        buildable but unconfirmed. That label is allowed; ``safe`` is not.
         """
         return not any(c.violated for c in self.safety)
+
+    @property
+    def confirmed_safe(self) -> bool:
+        """True only when every applicable hard safety check is evaluable and passing."""
+        return self.buildable and not any(
+            c.blocks_confirmed_safety for c in self.safety
+        )
+
+    @property
+    def safety_label(self) -> str:
+        if not self.buildable:
+            return "unbuildable"
+        if self.confirmed_safe:
+            return "safe"
+        return "buildable_unconfirmed"
 
     @property
     def worst_margin(self) -> float:
         """Smallest margin across the non-vacuous objectives.
 
         This is the quantity to maximise if the goal is to pass on the first shot.
-        Vacuous objectives are excluded so the crest tautology cannot inflate it.
+        Vacuous objectives are excluded so a request-echo crest cannot inflate it.
         """
         real = [o.margin for o in self.quality if not o.vacuous]
         return min(real) if real else 0.0
@@ -167,7 +188,7 @@ class ValidationReport:
         return [c for c in self.safety if c.violated]
 
     def unevaluated(self) -> list[SafetyConstraint]:
-        return [c for c in self.safety if c.indeterminate]
+        return [c for c in self.safety if c.applicable and c.indeterminate]
 
     def summary(self) -> str:
         return (
@@ -328,6 +349,7 @@ def _safety_constraints(
                     else None
                 ),
                 detail=check.reason,
+                applicable=check.applicable,
             )
         )
 
@@ -357,15 +379,17 @@ def _quality_objectives(
         ),
         QualityObjective(
             code="CREST_VOLTAGE_IN_WINDOW",
-            description="Peak voltage within tolerance of the requested voltage",
+            description=(
+                "Preliminary loaded crest (N*V_stage*eta) within tolerance of "
+                "the requested voltage"
+            ),
             value=prediction.crest_voltage_kv,
             minimum=v_to_kv(crest_min),
             maximum=v_to_kv(crest_max),
             unit="kV",
-            # Workbook E20 returns the requested voltage, so the predicted crest
-            # equals the window centre exactly and this can never fail. Passing it
-            # carries no information until a voltage-efficiency model exists.
-            vacuous=True,
+            # Independent of the request. Equal to the request only when charging
+            # voltage was sized as V_req/(eta*N). Not the E20 tautology.
+            vacuous=False,
         ),
     ]
 
@@ -414,10 +438,20 @@ def validate_configuration(
             )
         )
 
-    return ValidationReport(
+    report = ValidationReport(
         configuration=configuration,
         safety=safety,
         quality=quality,
         stress=stress,
         caveats=caveats,
     )
+    if report.buildable and not report.confirmed_safe:
+        report.caveats.append(
+            Caveat(
+                "SAFETY_UNCONFIRMED",
+                "At least one applicable hard safety check is unevaluated. This "
+                "configuration is buildable-unconfirmed, never 'safe'.",
+                Severity.WARNING,
+            )
+        )
+    return report

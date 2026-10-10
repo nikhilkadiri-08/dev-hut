@@ -61,6 +61,8 @@ class StressCheck:
     actual: float | None = None
     limit: float | None = None
     unit: str = ""
+    applicable: bool = True
+    """False if this limit does not apply to the present request (e.g. no shot rate)."""
 
     @property
     def margin_fraction(self) -> float | None:
@@ -114,7 +116,7 @@ class CapacitorStressReport:
         an unevaluated limit is not a satisfied limit.
         """
         return bool(self.checks) and all(
-            c.status is CheckStatus.PASS for c in self.checks
+            c.status is CheckStatus.PASS for c in self.checks if c.applicable
         )
 
 
@@ -341,17 +343,26 @@ def assess_capacitor_stress(
         )
 
     # --- repetitive operation ---
-    if cap_ratings.max_shots_per_hour is None or shots_per_hour is None:
-        missing = []
-        if cap_ratings.max_shots_per_hour is None:
-            missing.append("the capacitor's repetition rating")
-        if shots_per_hour is None:
-            missing.append("the intended shot rate")
+    if shots_per_hour is None:
         checks.append(
             StressCheck(
                 name="Repetitive operation",
                 status=CheckStatus.UNKNOWN,
-                reason=f"Needs {' and '.join(missing)}; not supplied.",
+                reason="No shot rate was given, so a repetition-limit check does not apply.",
+                applicable=False,
+            )
+        )
+    elif cap_ratings.max_shots_per_hour is None:
+        checks.append(
+            StressCheck(
+                name="Repetitive operation",
+                status=CheckStatus.UNKNOWN,
+                reason=(
+                    f"Intended rate is {shots_per_hour:g} shots/h, but no capacitor "
+                    "repetition rating was supplied."
+                ),
+                actual=shots_per_hour,
+                unit="shots/h",
             )
         )
     else:
@@ -370,21 +381,37 @@ def assess_capacitor_stress(
             )
         )
 
-    # --- resistor duty, which nobody supplied ratings for either ---
-    checks.append(
-        StressCheck(
-            name="Resistor energy duty",
-            status=CheckStatus.UNKNOWN,
-            reason=(
-                f"The front and tail resistors absorb essentially all of the "
-                f"{total_energy / 1000.0:.4g} kJ stored per shot, but the supplied "
-                f"material gives no resistor energy, power or thermal ratings. "
-                f"This is a real limit on repetition rate and it is unevaluated."
-            ),
-            actual=total_energy,
-            unit="J",
+    resistor_limit = ratings.resistor_energy_rating_j
+    if resistor_limit is None:
+        checks.append(
+            StressCheck(
+                name="Resistor energy duty",
+                status=CheckStatus.UNKNOWN,
+                reason=(
+                    f"The front and tail resistors absorb essentially all of the "
+                    f"{total_energy / 1000.0:.4g} kJ stored per shot, but no resistor "
+                    f"energy rating was supplied. Unevaluated, so this configuration "
+                    f"cannot be presented as safe."
+                ),
+                actual=total_energy,
+                unit="J",
+            )
         )
-    )
+    else:
+        checks.append(
+            StressCheck(
+                name="Resistor energy duty",
+                status=(
+                    CheckStatus.PASS
+                    if total_energy <= resistor_limit
+                    else CheckStatus.FAIL
+                ),
+                reason="Stored energy per shot against the supplied resistor energy rating.",
+                actual=total_energy,
+                limit=resistor_limit,
+                unit="J",
+            )
+        )
 
     if not cap_ratings.any_known:
         caveats.append(

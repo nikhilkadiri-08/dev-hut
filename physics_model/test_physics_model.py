@@ -62,6 +62,8 @@ from physics_model import (
     charging_voltage_per_stage,
     charging_voltage_trim,
     crest_voltage,
+    ideal_marx_voltage,
+    loaded_crest_estimate,
     extract_front_time,
     extract_tail_time,
     extract_time_to_peak,
@@ -87,8 +89,13 @@ from physics_model import (
     total_load_capacitance,
     training_domain,
     validate_configuration,
+    workbook_echo_crest,
 )
 from physics_model.ml_interface import DATASET_FEATURE_COLUMNS, MLFeatures
+from physics_model.targets import (
+    WORKBOOK_BASELINE,
+    timing_definition,
+)
 from physics_model.validation import _quality_objectives
 from physics_model.workbook_reference import (
     WORKED_EXAMPLE_RESULTS,
@@ -210,6 +217,7 @@ def test_snap_to_grid_rounds_halves_up_like_excel():
 def test_crest_voltage_is_the_requested_voltage_unchanged():
     """Cell E20 is '=B7'. Documenting the tautology rather than hiding it."""
     assert crest_voltage(EXAMPLE_V) == EXAMPLE_V
+    assert workbook_echo_crest(EXAMPLE_V) == EXAMPLE_V
     assert crest_voltage(EXAMPLE_V) / 1000.0 == WORKED_EXAMPLE_RESULTS["E20"]
 
 
@@ -652,9 +660,12 @@ def test_workbook_example_passes_both_verdicts_except_for_unknown_ratings():
     )
     assert report.quality_verdict is Verdict.COMPLIANT
     assert report.buildable
+    assert not report.confirmed_safe
+    assert report.safety_label == "buildable_unconfirmed"
     # Not SAFE, because the capacitor ratings were never supplied.
     assert report.safety_verdict is Verdict.INDETERMINATE
     assert report.unevaluated()
+    assert any(c.code == "SAFETY_UNCONFIRMED" for c in report.caveats)
 
 
 def test_overvoltage_configuration_is_unsafe_regardless_of_waveform_quality():
@@ -676,19 +687,38 @@ def test_overvoltage_configuration_is_unsafe_regardless_of_waveform_quality():
     assert any(c.code == "STAGE_VOLTAGE_WITHIN_RATING" for c in report.violations())
 
 
-def test_crest_objective_is_marked_vacuous_and_excluded_from_margin():
+def test_crest_objective_is_the_loaded_estimate_not_a_vacuous_echo():
     configuration = example_configuration()
     prediction = predict(configuration, EXAMPLE_V)
     objectives = _quality_objectives(prediction, configuration.target)
     crest = next(o for o in objectives if o.code == "CREST_VOLTAGE_IN_WINDOW")
-    assert crest.vacuous
+    assert not crest.vacuous
     assert crest.satisfied
-    assert crest.margin == pytest.approx(1.0)  # dead centre, by construction
+    # Charging was sized as V_req/(eta*N), so the loaded estimate lands on the
+    # request. That is computed, not tautological: a different V_stage misses.
+    assert crest.margin == pytest.approx(1.0)
 
     report = validate_configuration(configuration, prediction)
-    # The vacuous objective is perfect, so including it would never bind; the
-    # worst margin must come from a real objective instead.
     assert report.worst_margin < 1.0
+
+    other = GeneratorConfiguration(
+        stages=9,
+        charging_voltage_per_stage_v=kv_to_v(100.0),
+        front_resistance_per_stage_ohm=50.0,
+        tail_resistance_per_stage_ohm=25.0,
+        impulse_type=ImpulseType.LIGHTNING,
+        circuit=WORKBOOK_EXAMPLE_CIRCUIT,
+        ratings=WORKBOOK_EXAMPLE_RATINGS,
+    )
+    other_prediction = predict(other, EXAMPLE_V)
+    other_crest = next(
+        o
+        for o in _quality_objectives(other_prediction, other.target)
+        if o.code == "CREST_VOLTAGE_IN_WINDOW"
+    )
+    assert other_prediction.crest_voltage_kv == pytest.approx(9 * 100.0 * EXAMPLE_ETA)
+    assert other_prediction.workbook_echo_voltage_kv == pytest.approx(1425.0)
+    assert not other_crest.satisfied
 
 
 def test_worst_margin_is_computed_from_the_workbook_times():
@@ -857,10 +887,13 @@ def test_optimiser_reproduces_the_workbook_resistor_selection():
 
     This package searches the inventory instead, so arriving at the same 50/25
     ohm per stage is a meaningful cross-check rather than a restatement.
+    Without component ratings the winner is buildable-unconfirmed, not recommended.
     """
     result = optimise(example_request())
-    best = result.recommended
+    assert result.recommended is None
+    best = result.best_unconfirmed
     assert best is not None
+    assert best.presentation == "buildable_unconfirmed"
     assert best.stages == int(WORKED_EXAMPLE_RESULTS["E8"])
     assert best.configuration.front_resistance_per_stage_ohm == (
         WORKED_EXAMPLE_RESULTS["E14"]
@@ -874,6 +907,8 @@ def test_optimiser_reproduces_the_workbook_resistor_selection():
     assert best.prediction.tail_time_us == pytest.approx(
         WORKED_EXAMPLE_RESULTS["E19"], rel=1e-12
     )
+    assert any(c.code == "SEARCH_INVERTS_WORKBOOK_APPROXIMATION" for c in result.caveats)
+    assert any(c.code == "NO_CONFIRMED_SAFE_CANDIDATE" for c in result.caveats)
 
 
 def test_fast_search_finds_the_same_optimum_as_exhaustive_search():
@@ -970,7 +1005,8 @@ def test_keeping_the_installed_resistors_is_preferred_when_quality_is_equal():
             weights=RankingWeights(),  # defaults, which include climb penalties
         )
     )
-    best = result.recommended
+    best = result.best_unconfirmed
+    assert result.recommended is None
     assert best is not None
     assert best.climb_operations == 0
     assert "No physical change needed" in best.climb_detail[0]
@@ -983,7 +1019,8 @@ def test_a_climb_is_still_recommended_when_it_is_needed():
         tail_resistance_per_stage_ohm=5.0,
     )
     result = optimise(example_request(installed=installed, weights=RankingWeights()))
-    best = result.recommended
+    best = result.best_unconfirmed
+    assert result.recommended is None
     assert best is not None
     assert best.climb_operations == 2
     assert any("front resistors" in d for d in best.climb_detail)
@@ -999,8 +1036,8 @@ def test_margin_is_never_sacrificed_to_avoid_a_climb_by_default():
     )
     with_penalties = optimise(
         example_request(installed=installed, weights=RankingWeights())
-    ).recommended
-    without_penalties = optimise(example_request()).recommended
+    ).best_unconfirmed
+    without_penalties = optimise(example_request()).best_unconfirmed
     assert with_penalties is not None and without_penalties is not None
     assert with_penalties.worst_margin == pytest.approx(
         without_penalties.worst_margin
@@ -1042,6 +1079,7 @@ def test_handoff_values_match_the_workbook_example_in_laboratory_units():
         WORKED_EXAMPLE_RESULTS["E18"], rel=1e-12
     )
     assert handoff.physics_crest_kv == pytest.approx(WORKED_EXAMPLE_RESULTS["E20"])
+    assert handoff.predicted_crest_kv == pytest.approx(1425.0)
 
 
 def test_knn_distance_is_zero_for_an_identical_row_and_grows_with_difference():
@@ -1160,7 +1198,8 @@ def test_handoff_warns_that_the_crest_residual_is_the_whole_model():
 def test_every_prediction_declares_the_crest_tautology_and_lack_of_validation():
     prediction = predict(example_configuration(), EXAMPLE_V)
     codes = {c.code for c in prediction.caveats}
-    assert "CREST_NOT_MODELLED" in codes
+    assert "CREST_IS_UNVALIDATED_LOADED_ESTIMATE" in codes
+    assert "WORKBOOK_ECHO_IS_NOT_A_PREDICTION" in codes
     assert "NO_MEASURED_VALIDATION" in codes
     assert "FRONT_TIME_IS_EMPIRICAL" in codes
 
@@ -1174,3 +1213,111 @@ def test_validation_report_refuses_to_equate_prediction_with_compliance():
     assert "PREDICTED_COMPLIANCE_IS_NOT_COMPLIANCE" in codes
     assert "TOLERANCE_EDITION_UNCONFIRMED" in codes
     assert "NO_CAPACITOR_RATINGS_SUPPLIED" in codes
+    assert "SAFETY_UNCONFIRMED" in codes
+
+
+# --------------------------------------------------------------------------- #
+# 12. Intended prediction target, loaded crest, confirmed safety
+# --------------------------------------------------------------------------- #
+
+
+def ratings_with_evaluable_stress() -> GeneratorRatings:
+    """Illustrative ratings that make every applicable hard check evaluable.
+
+    Not datasheet values. Used only so the confirmed-safe path can be tested.
+    """
+    return GeneratorRatings.from_lab_units(
+        intra_stage_topology=IntraStageTopology.PARALLEL,
+        capacitor_ratings=CapacitorRatings.from_lab_units(
+            rated_voltage_kv=250.0,
+            rated_energy_j=1e5,
+            rated_peak_current_a=2e4,
+        ),
+        resistor_energy_rating_j=1e6,
+    )
+
+
+def test_intended_timing_definitions_are_not_the_workbook_cells():
+    lightning = timing_definition(ImpulseType.LIGHTNING)
+    switching = timing_definition(ImpulseType.SWITCHING)
+    assert "1.67" in lightning.front_or_peak
+    assert "t90" in lightning.front_or_peak
+    assert "time-to-peak" in switching.front_or_peak.lower()
+    assert not lightning.workbook_matches_definition
+    assert not switching.workbook_matches_definition
+    assert "E20" in WORKBOOK_BASELINE["peak_voltage"]
+    assert "not a prediction" in WORKBOOK_BASELINE["peak_voltage"]
+
+
+def test_loaded_crest_is_independent_of_the_request():
+    """Crest comes from N*V_stage*eta, not from echoing the requested voltage."""
+    configuration = GeneratorConfiguration(
+        stages=9,
+        charging_voltage_per_stage_v=kv_to_v(150.0),
+        front_resistance_per_stage_ohm=50.0,
+        tail_resistance_per_stage_ohm=25.0,
+        impulse_type=ImpulseType.LIGHTNING,
+        circuit=WORKBOOK_EXAMPLE_CIRCUIT,
+        ratings=WORKBOOK_EXAMPLE_RATINGS,
+    )
+    prediction = predict(configuration, EXAMPLE_V)
+    assert ideal_marx_voltage(9, kv_to_v(150.0)) == pytest.approx(kv_to_v(1350.0))
+    assert loaded_crest_estimate(9, kv_to_v(150.0), EXAMPLE_ETA) == pytest.approx(
+        kv_to_v(1350.0 * EXAMPLE_ETA)
+    )
+    assert prediction.crest_voltage_v == pytest.approx(kv_to_v(1350.0 * EXAMPLE_ETA))
+    assert prediction.ideal_marx_voltage_v == pytest.approx(kv_to_v(1350.0))
+    assert prediction.workbook_echo_voltage_v == pytest.approx(EXAMPLE_V)
+    assert prediction.crest_voltage_v != prediction.workbook_echo_voltage_v
+
+
+def test_confirmed_safe_requires_every_applicable_check():
+    missing = example_configuration()
+    missing_report = validate_configuration(
+        missing, predict(missing, EXAMPLE_V), inventory=WORKBOOK_EXAMPLE_INVENTORY
+    )
+    assert missing_report.buildable
+    assert not missing_report.confirmed_safe
+    assert missing_report.safety_label == "buildable_unconfirmed"
+
+    complete = example_configuration(ratings=ratings_with_evaluable_stress())
+    complete_report = validate_configuration(
+        complete, predict(complete, EXAMPLE_V), inventory=WORKBOOK_EXAMPLE_INVENTORY
+    )
+    assert complete_report.confirmed_safe
+    assert complete_report.safety_verdict is Verdict.SAFE
+    assert complete_report.safety_label == "safe"
+
+    # Capacitor ratings without a resistor energy rating still cannot be safe.
+    caps_only = example_configuration(
+        ratings=GeneratorRatings.from_lab_units(
+            intra_stage_topology=IntraStageTopology.PARALLEL,
+            capacitor_ratings=CapacitorRatings.from_lab_units(
+                rated_voltage_kv=250.0,
+                rated_energy_j=1e5,
+                rated_peak_current_a=2e4,
+            ),
+        )
+    )
+    caps_only_report = validate_configuration(
+        caps_only, predict(caps_only, EXAMPLE_V), inventory=WORKBOOK_EXAMPLE_INVENTORY
+    )
+    assert caps_only_report.buildable
+    assert not caps_only_report.confirmed_safe
+    assert any(
+        c.code == "STRESS_RESISTOR_ENERGY_DUTY" and c.indeterminate
+        for c in caps_only_report.unevaluated()
+    )
+
+
+def test_recommended_requires_confirmed_safety():
+    unconfirmed = optimise(example_request())
+    assert unconfirmed.recommended is None
+    assert unconfirmed.best_unconfirmed is not None
+    assert unconfirmed.best_unconfirmed.presentation == "buildable_unconfirmed"
+
+    confirmed = optimise(example_request(ratings=ratings_with_evaluable_stress()))
+    assert confirmed.recommended is not None
+    assert confirmed.recommended.confirmed_safe
+    assert confirmed.recommended.presentation == "recommended"
+    assert confirmed.best_unconfirmed is None

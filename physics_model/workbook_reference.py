@@ -86,7 +86,10 @@ def read_calculator_cells() -> dict[str, float | str] | None:
     """
     if not WORKBOOK_PATH.exists():
         return None
-    import openpyxl
+    try:
+        import openpyxl
+    except ImportError:
+        return None
 
     workbook = openpyxl.load_workbook(
         WORKBOOK_PATH, data_only=True, read_only=True

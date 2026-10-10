@@ -241,6 +241,7 @@ class GeneratorRatings:
     capacitors_per_stage: int = 2
     intra_stage_topology: IntraStageTopology = IntraStageTopology.UNSPECIFIED
     capacitor_ratings: CapacitorRatings = field(default_factory=CapacitorRatings)
+    resistor_energy_rating_j: float | None = None
     veracity: Veracity = Veracity.SPECIFIED
 
     def __post_init__(self) -> None:
@@ -253,6 +254,13 @@ class GeneratorRatings:
         _require("max_stage_voltage_v", self.max_stage_voltage_v, "V", maximum=1e7)
         _require("stage_capacitance_f", self.stage_capacitance_f, "F", maximum=1.0)
         _require("capacitors_per_stage", self.capacitors_per_stage, "capacitors", maximum=100)
+        if self.resistor_energy_rating_j is not None:
+            _require(
+                "resistor_energy_rating_j",
+                self.resistor_energy_rating_j,
+                "J",
+                maximum=1e9,
+            )
 
     @property
     def capacitor_capacitance_f(self) -> float | None:
@@ -285,6 +293,7 @@ class GeneratorRatings:
         capacitors_per_stage: int = 2,
         intra_stage_topology: IntraStageTopology = IntraStageTopology.UNSPECIFIED,
         capacitor_ratings: CapacitorRatings | None = None,
+        resistor_energy_rating_j: float | None = None,
         veracity: Veracity = Veracity.SPECIFIED,
     ) -> "GeneratorRatings":
         return cls(
@@ -295,6 +304,7 @@ class GeneratorRatings:
             capacitors_per_stage=capacitors_per_stage,
             intra_stage_topology=intra_stage_topology,
             capacitor_ratings=capacitor_ratings or CapacitorRatings(),
+            resistor_energy_rating_j=resistor_energy_rating_j,
             veracity=veracity,
         )
 

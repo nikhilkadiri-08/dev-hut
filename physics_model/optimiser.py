@@ -1,24 +1,34 @@
-"""Selects the best buildable configuration, cheaply and provably.
+"""Selects the best buildable configuration of the *workbook approximations*.
 
-Why this is not a search
-------------------------
+This is not a verified circuit optimum. Cells ``E12`` and ``E15`` are the exact
+algebraic inverses of the workbook cells ``E18`` and ``E19``. The inversion is
+exact for those two approximations and for no other definition of front or tail.
+
+Lightning IEC T1 is ``1.67*(t90-t30)`` extracted from V(t). Switching time-to-peak
+is a different definition. The spreadsheet applies the same E18 formula to both.
+The search therefore sizes resistors for the workbook formulas, not for a solved
+Marx circuit. See :mod:`physics_model.targets`.
+
+Why the catalogue walk is cheap
+-------------------------------
 The obvious approach is to enumerate every (stages, front resistor, tail resistor)
 triple, predict each, and keep the best. For the workbook's worked example that is
 7 feasible stage counts times 25 distinct buildable front resistances times 24
 tail resistances, so 4,200 evaluations per request, and it grows with the inventory.
 
-It is also unnecessary, because the workbook's timing equations are **analytically
-invertible**. Cells ``E12`` and ``E15`` are the exact algebraic inverses of ``E18``
-and ``E19``. So rather than searching for a resistance that happens to produce the
-right time, we solve for the resistance that produces it exactly, then take the
-nearest value the laboratory can actually build.
+It is unnecessary *for the workbook timing equations*, because those equations are
+analytically invertible. Rather than searching for a resistance that happens to
+produce the right workbook time, we solve for the resistance that produces it
+exactly, then take the nearest value the laboratory can actually build.
 
-The optimum is then provably one of two values, by this chain of reasoning:
+Among the discrete inventory, the workbook-approximation optimum is then one of
+two values, by this chain of reasoning:
 
-1. ``front_time`` is strictly increasing in the front resistance and ``tail_time``
-   is strictly increasing in the tail resistance. Both are continuous.
+1. ``front_time`` (E18) is strictly increasing in the front resistance and
+   ``tail_time`` (E19) is strictly increasing in the tail resistance. Both are
+   continuous.
 2. So over a sorted set of buildable resistances, the one minimising
-   ``|achieved - target|`` is adjacent to the exact analytic solution: it is one of
+   ``|achieved - target|`` is adjacent to the exact analytic inverse: it is one of
    the two values bracketing it. Nothing further away can be closer.
 3. The acceptance window centre equals the target for all four cases in use
    (lightning 0.84-1.56 around 1.2, switching 200-300 around 250, and both tails
@@ -26,21 +36,23 @@ The optimum is then provably one of two values, by this chain of reasoning:
    as maximising the margin inside the window. ``test_physics_model`` asserts this
    rather than assuming it.
 4. Front time depends only on the front resistance and tail time only on the tail
-   resistance in this model, so the joint objective separates. Maximising a
-   minimum of two independent functions is achieved by maximising each separately,
-   because ``min`` is monotone in both arguments.
+   resistance *in this approximation*, so the joint objective separates.
 
 That makes the cost ``O(m log m)`` once per inventory plus ``O(S log m)`` per
 request, with ``S`` the number of candidate stage counts and ``m`` the inventory
-size: at most ``4*S`` evaluations, so 28 instead of 4,200 for the worked example,
-and the answer is the true optimum rather than an approximation to it.
-``test_fast_search_finds_the_same_optimum_as_exhaustive_search`` checks that
-against brute force over the whole space.
+size: at most ``4*S`` evaluations, so 28 instead of 4,200 for the worked example.
+``test_fast_search_finds_the_same_optimum_as_exhaustive_search`` checks that the
+fast walk matches brute force *on the same workbook equations*.
 
-The separability in step 4 is a property of the *workbook's approximation*, not of
+The separability in step 4 is a property of the workbook's approximation, not of
 a real impulse generator. A true double-exponential solution couples the front and
 tail through both resistors, and if the physics layer is ever replaced with a
 transient solver this derivation stops holding and the search must be revisited.
+
+A candidate is ``recommended`` only when it is ``confirmed_safe`` (every
+applicable hard safety check evaluable and passing) *and* IEC-compliant on the
+workbook approximations. A buildable-but-unconfirmed winner is returned separately
+as ``best_unconfirmed`` and is never labelled safe.
 
 Minimising physical reconfiguration
 -----------------------------------
@@ -86,6 +98,7 @@ from physics_model.inputs import (
     ResistorStock,
     TestCircuit,
 )
+from physics_model.targets import WORKBOOK_BASELINE, timing_definition
 from physics_model.validation import (
     ValidationReport,
     achievable_per_stage_values,
@@ -194,8 +207,25 @@ class Candidate:
         return self.report.buildable
 
     @property
+    def confirmed_safe(self) -> bool:
+        return self.report.confirmed_safe
+
+    @property
     def compliant(self) -> bool:
         return self.report.quality_verdict.value == "compliant"
+
+    @property
+    def presentation(self) -> str:
+        """How this candidate may be shown. Never 'safe' unless confirmed_safe."""
+        if not self.buildable:
+            return "rejected"
+        if self.confirmed_safe and self.compliant:
+            return "recommended"
+        if self.confirmed_safe:
+            return "safe_noncompliant"
+        if self.compliant:
+            return "buildable_unconfirmed"
+        return "buildable_unconfirmed_noncompliant"
 
     @property
     def worst_margin(self) -> float:
@@ -230,9 +260,24 @@ class OptimisationResult:
 
     @property
     def recommended(self) -> Candidate | None:
-        """Highest-ranked candidate that is both buildable and predicted compliant."""
+        """Confirmed-safe and workbook-compliant winner, or None.
+
+        Never an unconfirmed candidate. Unevaluated hard checks keep a point out
+        of this set even when it is buildable and predicted compliant.
+        """
         for candidate in self.candidates:
-            if candidate.buildable and candidate.compliant:
+            if candidate.confirmed_safe and candidate.compliant:
+                return candidate
+        return None
+
+    @property
+    def best_unconfirmed(self) -> Candidate | None:
+        """Best buildable, workbook-compliant candidate that is not confirmed safe.
+
+        Labelled buildable-unconfirmed. Never 'safe' and never ``recommended``.
+        """
+        for candidate in self.candidates:
+            if candidate.buildable and candidate.compliant and not candidate.confirmed_safe:
                 return candidate
         return None
 
@@ -341,9 +386,10 @@ def optimise(request: OptimisationRequest) -> OptimisationResult:
     """Rank the buildable configurations for one test request.
 
     Returns candidates ordered best-first. A candidate that violates a hard safety
-    constraint is excluded and recorded in ``rejected``; a candidate whose
-    component checks could not be evaluated is kept, because unevaluated is not the
-    same as unsafe, and the unevaluated checks travel with it in its report.
+    constraint is excluded and recorded in ``rejected``. A candidate whose
+    applicable checks could not be evaluated is kept as buildable-unconfirmed and
+    is never returned as ``recommended``. The inversion used to propose resistor
+    values is exact for workbook E18/E19 only.
     """
     circuit = request.circuit
     ratings = request.ratings
@@ -409,7 +455,8 @@ def optimise(request: OptimisationRequest) -> OptimisationResult:
 
         c_gen = generator_capacitance(ratings.stage_capacitance_f, stages)
 
-        # Closed-form inverses: workbook E12 and E15. O(1).
+        # Closed-form inverses of workbook E18/E19 (cells E12 and E15). Exact
+        # for those approximations only — not IEC T1 from V(t), not switching Tp.
         front_total_target = theoretical_total_front_resistance(
             target.front_time_s, c_load, circuit.stray_inductance_h
         )
@@ -482,7 +529,30 @@ def optimise(request: OptimisationRequest) -> OptimisationResult:
 
     # Compliant candidates first, then by score. Sorting on `compliant` keeps a
     # non-compliant but high-margin candidate from outranking a compliant one.
+    # Confirmed safety is a gate on ``recommended``, not a ranking term: an
+    # unevaluated check must not be papered over by a better waveform score.
     candidates.sort(key=lambda c: (not c.compliant, -c.score))
+    timing = timing_definition(request.impulse_type)
+    result = OptimisationResult(
+        request=request,
+        candidates=candidates,
+        rejected=rejected,
+        caveats=caveats,
+        evaluations=evaluations,
+        exhaustive_evaluations=len(stage_options) * len(front_values) * len(tail_values),
+    )
+
+    caveats.append(
+        Caveat(
+            "SEARCH_INVERTS_WORKBOOK_APPROXIMATION",
+            "Resistor sizing inverts E18 (front) and E19 (tail) exactly. That "
+            "inversion is exact only for those workbook cells, not for a solved "
+            f"circuit. Intended front/peak: {timing.front_or_peak} Current numbers "
+            f"are {WORKBOOK_BASELINE['front_time']}. This is not a verified "
+            "circuit optimum.",
+            Severity.WARNING,
+        )
+    )
 
     if not candidates:
         caveats.append(
@@ -493,23 +563,25 @@ def optimise(request: OptimisationRequest) -> OptimisationResult:
                 Severity.BLOCKING,
             )
         )
-    elif candidates[0].report.unevaluated():
+    elif result.recommended is None and result.best_unconfirmed is not None:
         caveats.append(
             Caveat(
-                "RANKED_WITH_UNEVALUATED_LIMITS",
-                f"The recommended configuration has "
-                f"{len(candidates[0].report.unevaluated())} component check(s) that "
-                f"could not be evaluated because the ratings were not supplied. "
-                f"Ranking reflects waveform quality only.",
+                "NO_CONFIRMED_SAFE_CANDIDATE",
+                "A buildable, workbook-compliant candidate exists but at least "
+                "one applicable hard safety check is unevaluated. It is returned "
+                "as best_unconfirmed, labelled buildable-unconfirmed, never as "
+                "safe or recommended.",
+                Severity.WARNING,
+            )
+        )
+    elif result.recommended is None:
+        caveats.append(
+            Caveat(
+                "NO_COMPLIANT_CANDIDATE",
+                "No catalogue combination is both confirmed-safe (or even "
+                "buildable) and IEC-compliant under the workbook equations.",
                 Severity.WARNING,
             )
         )
 
-    return OptimisationResult(
-        request=request,
-        candidates=candidates,
-        rejected=rejected,
-        caveats=caveats,
-        evaluations=evaluations,
-        exhaustive_evaluations=len(stage_options) * len(front_values) * len(tail_values),
-    )
+    return result

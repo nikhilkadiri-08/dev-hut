@@ -22,10 +22,11 @@ Three things it is explicitly not:
   the Marx network was performed, because the supplied material does not define
   the network in enough detail to do so.
 * It is not a measured or validated CPRI waveform. No measured data was supplied.
-* Its peak is not a prediction. The peak is an *input*, taken from the requested
-  test voltage, because the workbook has no crest-voltage model at all (see
-  :func:`physics_model.calculations.crest_voltage`). A reconstruction cannot invent
-  information the source lacked.
+* Its peak is not a prediction. The peak is an *input*. Callers may pass the
+  preliminary loaded estimate ``N*V_stage*eta`` from
+  :func:`physics_model.calculations.loaded_crest_estimate`, or the request.
+  Workbook E20 is the request echoed back and is not a crest model. A
+  reconstruction cannot invent a circuit solution the source lacked.
 
 Timing definitions used here are from IEC 60060-1 and are supported by the
 workbook: the 1.67 factor in ``E18`` is the 30%/90% front-time convention, which

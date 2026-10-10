@@ -8,20 +8,18 @@ guessing what the other means.
 
 The division of labour, taken from the workbook
 -----------------------------------------------
-Physics produces a baseline (``E18``, ``E19``, ``E20``). The ML layer predicts the
-*residual* between that baseline and what the generator actually does, and cells
-``H6``-``H8`` add the two. So the ML model's job is error correction on three
-scalars, not waveform prediction. :func:`apply_residuals` is that addition, kept
-here so both sides use the same one.
+The spreadsheet's physics baseline is ``E18``, ``E19`` and ``E20``. Cells
+``H6``-``H8`` add ML residuals to those three. :func:`apply_residuals` is that
+addition. This project's residual model is **not** the workbook kNN; the kNN
+helpers below document the spreadsheet only.
 
 Where the residual targets differ in kind
 -----------------------------------------
-Two of the three residuals are corrections to a real model. The third is not.
-Because ``E20`` is ``=B7``, the physics crest "prediction" is the requested voltage
-echoed back, so the crest residual is not a correction to a model - it *is* the
-entire voltage-efficiency model, learned from data. That makes it the one residual
-that cannot be sanity-checked against physics, and the one most in need of measured
-data before anybody trusts it.
+The dataset column ``Physics_Crest_kV`` is still workbook E20 (the request echoed
+back). A residual against that column is the entire voltage-efficiency model,
+learned from data. This package also emits a separate preliminary loaded-crest
+estimate ``N * V_stage * eta`` from the configuration; that number is unvalidated
+and is **not** written into the dataset column.
 
 The reason this matters operationally
 -------------------------------------
@@ -257,7 +255,8 @@ def apply_residuals(
     return {
         "front_peak_us": prediction.front_time_us + residuals.front_peak_us,
         "tail_us": prediction.tail_time_us + residuals.tail_us,
-        "crest_kv": prediction.crest_voltage_kv + residuals.crest_kv,
+        # Workbook H8 adds the residual to E20, not to the loaded-crest estimate.
+        "crest_kv": prediction.workbook_echo_voltage_kv + residuals.crest_kv,
     }
 
 
@@ -335,6 +334,9 @@ class MLHandoff:
     physics_front_peak_us: float
     physics_tail_us: float
     physics_crest_kv: float
+    """Workbook E20 echo, matching the dataset's ``Physics_Crest_kV`` column."""
+    predicted_crest_kv: float
+    """Preliminary loaded estimate ``N*V_stage*eta``. Not a dataset column."""
     requested_kv: float
     out_of_domain: dict[str, tuple[float, tuple[float, float]]]
     caveats: list[Caveat]
@@ -384,10 +386,10 @@ def build_handoff(prediction: PhysicsPrediction) -> MLHandoff:
     caveats: list[Caveat] = [
         Caveat(
             "CREST_RESIDUAL_IS_THE_WHOLE_MODEL",
-            "Because the physics crest is the requested voltage echoed back, the "
-            "crest residual is not a correction to a model; it is the entire "
-            "voltage-efficiency model, learned from data. It cannot be "
-            "cross-checked against physics.",
+            "The dataset's Physics_Crest_kV column is workbook E20, the requested "
+            "voltage echoed back. A residual against that column is the entire "
+            "voltage-efficiency model, learned from data. It is not a correction "
+            "to the package's loaded-crest estimate (N*V_stage*eta).",
             Severity.WARNING,
         )
     ]
@@ -427,7 +429,8 @@ def build_handoff(prediction: PhysicsPrediction) -> MLHandoff:
         features=features,
         physics_front_peak_us=prediction.front_time_us,
         physics_tail_us=prediction.tail_time_us,
-        physics_crest_kv=prediction.crest_voltage_kv,
+        physics_crest_kv=v_to_kv(prediction.workbook_echo_voltage_v),
+        predicted_crest_kv=prediction.crest_voltage_kv,
         requested_kv=v_to_kv(prediction.requested_voltage_v),
         out_of_domain=out_of_domain,
         caveats=caveats,

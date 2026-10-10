@@ -1,30 +1,29 @@
 """The workbook's physics equations, ported to Python without alteration.
 
-Every function below names the workbook cell it came from. Where the workbook's
-formula is an approximation rather than a circuit solution, the docstring says so
-and says which part is empirical. Nothing here was re-derived or "improved": if a
-formula is crude, it is reproduced crudely and flagged, because the synthetic
-dataset and the ML residuals were both generated from these exact expressions and
-changing them would silently invalidate the ML layer.
+Intended prediction target
+--------------------------
+This package is meant to predict **actual peak voltage, front (or peak) time and
+tail time** from the circuit. See :mod:`physics_model.targets`. The functions
+below are the *workbook baseline*, not that circuit solution.
 
-What is genuinely physics
--------------------------
-``total_load_capacitance``, ``required_stages``, ``charging_voltage_per_stage``,
-``stage_utilisation``, ``generator_capacitance`` and ``tail_time`` are standard,
-exact given their stated idealisations.
+Workbook ports, preserved exactly
+---------------------------------
+Every function names the workbook cell it came from. Nothing here was re-derived
+to look more physical: the synthetic dataset was generated from these expressions,
+so changing them would silently break dataset parity.
 
-What is an empirical approximation
-----------------------------------
-``front_time`` combines a resistive term and an inductive term in quadrature with a
-coefficient of 2.5. The 1.67 factor is the IEC definition of front time from the
-30%/90% points; the quadrature combination and the 2.5 are a smoothing heuristic,
-not a solution of the series RLC loop. It is not a simulation of the generator.
+* ``E18`` / ``front_time`` — empirical front/peak approximation.
+* ``E19`` / ``tail_time`` — first-order tail approximation.
+* ``E20`` / ``workbook_echo_crest`` — requested voltage echoed back. **Not** an
+  independent crest prediction.
 
-What is not modelled at all
----------------------------
-``crest_voltage`` is workbook cell ``E20``, whose formula is ``=B7`` - the requested
-test voltage echoed back. The workbook contains no voltage-efficiency physics, so
-peak-voltage error is structurally invisible to the physics layer.
+Crest that is independent of the request
+----------------------------------------
+``ideal_marx_voltage`` is ``N * V_stage``. ``loaded_crest_estimate`` multiplies
+that by the operator-supplied efficiency. Both are computed from the
+configuration, not from the requested test voltage. They are a preliminary
+loaded-voltage estimate: unvalidated, not a measured crest, and not a complete
+Marx transient.
 """
 
 from __future__ import annotations
@@ -37,10 +36,10 @@ from backend.units import s_to_us, v_to_kv
 from physics_model.inputs import (
     GeneratorConfiguration,
     ImpulseTarget,
-    ImpulseType,
     TestCircuit,
     Veracity,
 )
+from physics_model.targets import WORKBOOK_BASELINE, timing_definition
 
 __all__ = [
     "FRONT_TIME_DEFINITION_FACTOR",
@@ -55,6 +54,9 @@ __all__ = [
     "required_stages",
     "charging_voltage_per_stage",
     "ideal_output_voltage",
+    "ideal_marx_voltage",
+    "loaded_crest_estimate",
+    "workbook_echo_crest",
     "stage_utilisation",
     "generator_capacitance",
     "series_equivalent_capacitance",
@@ -163,17 +165,45 @@ def charging_voltage_per_stage(
     return test_voltage_v / (efficiency * stages)
 
 
+def ideal_marx_voltage(stages: int, charging_voltage_per_stage_v: float) -> float:
+    """Ideal erected voltage ``N * V_stage``, before any efficiency derating.
+
+    A circuit identity for an ideal Marx with no load and no losses. It does not
+    use the requested test voltage. Not a measured crest and not a transient
+    solution of the generator.
+    """
+    if stages <= 0:
+        raise ValueError(f"stages must be positive, got {stages}")
+    return stages * charging_voltage_per_stage_v
+
+
+def loaded_crest_estimate(
+    stages: int, charging_voltage_per_stage_v: float, efficiency: float
+) -> float:
+    """Preliminary loaded crest: ``N * V_stage * eta``.
+
+    Computed only from the configuration. Independent of the requested test
+    voltage: if the charging voltage was not sized to the request, this will not
+    equal the request.
+
+    ``eta`` is the operator-supplied efficiency (workbook ``B12``), not a value
+    derived from the circuit. This is an unvalidated screening estimate. It is
+    not a complete Marx simulation and it is not laboratory data.
+    """
+    if efficiency <= 0.0:
+        raise ValueError(f"efficiency must be positive, got {efficiency}")
+    return ideal_marx_voltage(stages, charging_voltage_per_stage_v) * efficiency
+
+
 def ideal_output_voltage(
     stages: int, charging_voltage_per_stage_v: float, efficiency: float
 ) -> float:
-    """Open-circuit output voltage: ``n * Vcharge * efficiency``.
+    """Loaded crest estimate. Kept as the historical name of this product.
 
-    The workbook never writes this directly; it is the exact algebraic inverse of
-    ``E9``, included because the optimiser needs the forward direction. Note the
-    efficiency is an operator-supplied assumption (``B12``), not a derived quantity,
-    so this inherits that assumption's uncertainty.
+    Prefer :func:`loaded_crest_estimate` in new code. The workbook never writes
+    this cell; it is the forward direction of ``E9``.
     """
-    return stages * charging_voltage_per_stage_v * efficiency
+    return loaded_crest_estimate(stages, charging_voltage_per_stage_v, efficiency)
 
 
 def stage_utilisation(
@@ -239,11 +269,12 @@ def front_time(
 
     ``T1 = 1.67 * sqrt((Rf*C2)^2 + 2.5*L*C2)``
 
-    An empirical approximation, not a circuit solution. The resistive term
-    ``Rf*C2`` is the front time constant in the ``C1 >> C2`` limit; the inductive
-    term is added in quadrature with a coefficient of 2.5 for which the supplied
-    material gives no derivation. Treat the inductive contribution as a tuned
-    correction whose coefficient needs verification against measured shots.
+    An empirical approximation, not a circuit solution and not an extraction from
+    V(t). The 1.67 factor is the lightning ``T1 = 1.67*(t90-t30)`` definition; the
+    quadrature combination and the 2.5 are a smoothing heuristic. The workbook
+    applies this same formula to switching impulses, even though switching is
+    defined by time-to-peak, not T1. The algebraic inverse of this function is
+    exact for *this* approximation only.
     """
     resistive = front_resistance_total_ohm * total_load_c_f
     inductive = INDUCTANCE_COEFFICIENT * stray_inductance_h * total_load_c_f
@@ -268,17 +299,22 @@ def tail_time(
     return TAIL_DECAY_FACTOR * tail_resistance_total_ohm * (generator_c_f + total_load_c_f)
 
 
-def crest_voltage(test_voltage_v: float) -> float:
+def workbook_echo_crest(test_voltage_v: float) -> float:
     """Workbook ``E20``, whose formula is literally ``=B7``.
 
-    This is not a prediction. The workbook returns the requested voltage as the
-    predicted crest, so the physics layer has zero crest-voltage error by
-    construction and carries no information about what the generator would actually
-    deliver. Any peak-voltage accuracy figure computed against this is meaningless.
-    Callers get :data:`Severity.WARNING` caveat ``CREST_NOT_MODELLED`` from
-    :func:`predict`.
+    This is not a prediction. It exists so the synthetic dataset's
+    ``Physics_Crest_kV`` column can be reproduced. Use
+    :func:`loaded_crest_estimate` for a crest that comes from the configuration.
     """
     return test_voltage_v
+
+
+def crest_voltage(test_voltage_v: float) -> float:
+    """Workbook ``E20`` echo. Retained so existing tests can name the tautology.
+
+    Not the package's predicted crest. See :func:`loaded_crest_estimate`.
+    """
+    return workbook_echo_crest(test_voltage_v)
 
 
 # --------------------------------------------------------------------------- #
@@ -316,6 +352,12 @@ def theoretical_total_front_resistance(
 
     ``Rf = sqrt((T1/1.67)^2 - 2.5*L*C2) / C2``
 
+    Exact for the *workbook approximation* E18, including the lightning 1.67
+    factor. It is not the inverse of IEC T1 extracted from a real V(t), and for
+    switching it is not the inverse of time-to-peak. The optimiser uses this to
+    propose candidates; that does not make the proposal a verified circuit
+    optimum.
+
     The ``MAX(1E-18, ...)`` floor on the discriminant is reproduced exactly so this
     stays numerically identical to the spreadsheet and to the dataset generator.
     When the floor engages the answer is meaningless; test with
@@ -339,7 +381,8 @@ def theoretical_total_tail_resistance(
 
     ``Rt = T2 / (0.693 * (C1 + C2))``
 
-    Always solvable for a positive target, since the map is linear and increasing.
+    Exact for the first-order workbook tail, not for a two-resistor discharge or
+    a standardised T2 taken off V(t). Always solvable for a positive target.
     """
     denominator = TAIL_DECAY_FACTOR * (generator_c_f + total_load_c_f)
     if denominator <= 0.0:
@@ -373,9 +416,9 @@ def snap_to_grid(ohms: float, grid: float = RESISTOR_SNAP_GRID_OHM) -> float:
 class PhysicsPrediction:
     """Everything the physics layer can say about one configuration.
 
-    Times are seconds and voltages volts, as everywhere in this package. The
-    ``*_us`` and ``*_kv`` properties exist for display and for the ML feature row,
-    which follows the workbook's laboratory units.
+    ``crest_voltage_v`` is the preliminary loaded estimate ``N * V_stage * eta``,
+    computed from the configuration. ``workbook_echo_voltage_v`` is E20 (the
+    request). ``ideal_marx_voltage_v`` is ``N * V_stage`` with no efficiency.
     """
 
     configuration: GeneratorConfiguration
@@ -383,6 +426,8 @@ class PhysicsPrediction:
     tail_time_s: float
     crest_voltage_v: float
     requested_voltage_v: float
+    workbook_echo_voltage_v: float
+    ideal_marx_voltage_v: float
     generator_capacitance_f: float
     total_load_capacitance_f: float
     stage_utilisation: float
@@ -402,22 +447,38 @@ class PhysicsPrediction:
         return v_to_kv(self.crest_voltage_v)
 
     @property
+    def workbook_echo_voltage_kv(self) -> float:
+        return v_to_kv(self.workbook_echo_voltage_v)
+
+    @property
     def blocking(self) -> list[Caveat]:
         return [c for c in self.caveats if c.severity is Severity.BLOCKING]
 
     def quantities(self) -> dict[str, Quantity]:
-        """Named results with units and the workbook cell each came from."""
+        """Named results with units and where each number came from."""
         return {
             "front_time": Quantity(
-                self.front_time_us, "us", "workbook E18 (empirical approximation)"
+                self.front_time_us, "us", WORKBOOK_BASELINE["front_time"]
             ),
             "tail_time": Quantity(
-                self.tail_time_us, "us", "workbook E19 (first-order discharge)"
+                self.tail_time_us, "us", WORKBOOK_BASELINE["tail_time"]
             ),
             "crest_voltage": Quantity(
                 self.crest_voltage_kv,
                 "kV",
-                "workbook E20 (=B7, not a prediction)",
+                "preliminary N*V_stage*eta from the configuration, unvalidated",
+                Veracity.UNKNOWN,
+            ),
+            "ideal_marx_voltage": Quantity(
+                v_to_kv(self.ideal_marx_voltage_v),
+                "kV",
+                "N*V_stage, no efficiency",
+                Veracity.UNKNOWN,
+            ),
+            "workbook_echo_crest": Quantity(
+                self.workbook_echo_voltage_kv,
+                "kV",
+                WORKBOOK_BASELINE["peak_voltage"],
                 Veracity.UNKNOWN,
             ),
             "generator_capacitance": Quantity(
@@ -438,29 +499,51 @@ class PhysicsPrediction:
 def predict(
     configuration: GeneratorConfiguration, requested_voltage_v: float
 ) -> PhysicsPrediction:
-    """Run the full physics layer for one configuration.
+    """Run the physics layer for one configuration.
 
-    ``requested_voltage_v`` is kept separate from the configuration because the
-    workbook's crest "prediction" is just that number echoed back, and keeping them
-    distinct makes the tautology visible rather than hiding it inside the result.
+    Crest is ``N * V_stage * eta`` from the configuration. The requested voltage
+    is stored separately, together with the workbook E20 echo, so a mismatch is
+    visible when charging voltage was not sized to the request.
     """
     circuit: TestCircuit = configuration.circuit
     c_load = circuit.total_load_capacitance_f
     c_gen = configuration.generator_capacitance_f
+    definition = timing_definition(configuration.impulse_type)
+
+    ideal_v = ideal_marx_voltage(
+        configuration.stages, configuration.charging_voltage_per_stage_v
+    )
+    loaded_v = loaded_crest_estimate(
+        configuration.stages,
+        configuration.charging_voltage_per_stage_v,
+        circuit.efficiency,
+    )
+    echo_v = workbook_echo_crest(requested_voltage_v)
 
     caveats: list[Caveat] = [
         Caveat(
-            "CREST_NOT_MODELLED",
-            "Predicted crest voltage is the requested voltage echoed back "
-            "(workbook E20 is '=B7'). The physics layer models no voltage "
-            "efficiency, so it cannot estimate peak-voltage error.",
+            "CREST_IS_UNVALIDATED_LOADED_ESTIMATE",
+            "Predicted crest is N * V_stage * eta from this configuration, not the "
+            "requested voltage and not workbook E20. Efficiency is an operator "
+            "input, the Marx topology is not fully specified, and this is not a "
+            "measured or complete transient simulation.",
             Severity.WARNING,
         ),
         Caveat(
+            "WORKBOOK_ECHO_IS_NOT_A_PREDICTION",
+            f"Workbook E20 echoes the request ({v_to_kv(echo_v):.4g} kV) and is "
+            "kept only for dataset parity. It is not the predicted crest.",
+            Severity.NOTICE,
+        ),
+        Caveat(
             "FRONT_TIME_IS_EMPIRICAL",
-            "Front time uses the workbook's quadrature approximation with an "
-            "inductive coefficient of 2.5, for which no derivation was supplied. "
-            "It is not a transient simulation of the generator.",
+            "Front/peak time is workbook E18, not an extraction from V(t). "
+            + definition.front_or_peak
+            + (
+                " The workbook formula does not implement that definition."
+                if not definition.workbook_matches_definition
+                else ""
+            ),
             Severity.NOTICE,
         ),
         Caveat(
@@ -502,8 +585,6 @@ def predict(
     )
     t2 = tail_time(configuration.tail_resistance_total_ohm, c_gen, c_load)
 
-    # Energy at the moment of charging: n stage capacitors each at the charging
-    # voltage. Equals 0.5*C1*Vgen^2 on the discharge side; see the test suite.
     energy = configuration.stages * stored_energy(
         configuration.ratings.stage_capacitance_f,
         configuration.charging_voltage_per_stage_v,
@@ -513,8 +594,10 @@ def predict(
         configuration=configuration,
         front_time_s=t1,
         tail_time_s=t2,
-        crest_voltage_v=crest_voltage(requested_voltage_v),
+        crest_voltage_v=loaded_v,
         requested_voltage_v=requested_voltage_v,
+        workbook_echo_voltage_v=echo_v,
+        ideal_marx_voltage_v=ideal_v,
         generator_capacitance_f=c_gen,
         total_load_capacitance_f=c_load,
         stage_utilisation=stage_utilisation(
