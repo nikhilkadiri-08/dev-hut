@@ -139,6 +139,32 @@ export interface ProfileResponse {
   reach: ProfileReach | null;
 }
 
+export interface LiteratureSource {
+  title: string;
+  url: string;
+  year: number | null;
+  excerpt?: string;
+}
+
+export interface LiteratureRange {
+  id: string;
+  kind: string;
+  label: string;
+  quantity: string;
+  typical_min: number;
+  typical_max: number;
+  unit: string;
+  note: string;
+  sources: LiteratureSource[];
+}
+
+export interface LiteratureCatalogue {
+  disclaimer: string;
+  retrieved: string;
+  ranges: LiteratureRange[];
+  workbook_conflicts: { id: string; edition: string; detail: string }[];
+}
+
 export interface TestObjectType {
   id: string;
   label: string;
@@ -147,6 +173,7 @@ export interface TestObjectType {
   typical_min_pf: number;
   typical_max_pf: number;
   provenance: Provenance;
+  literature_kind?: string | null;
 }
 
 export interface ImpulseSpecMeta {
@@ -189,4 +216,5 @@ export interface Metadata {
   assumptions: AssumptionEntry[];
   assumptions_requiring_attention: AssumptionEntry[];
   capabilities: Record<string, string>;
+  literature?: LiteratureCatalogue;
 }

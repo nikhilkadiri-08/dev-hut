@@ -58,6 +58,7 @@ def test_metadata_reports_unimplemented_capabilities_honestly():
     assert capabilities["validation"] == "implemented"
     assert capabilities["physics_engine"] == "not_implemented"
     assert capabilities["ml_residual_model"] == "not_implemented"
+    assert capabilities["literature_catalogue"] == "implemented"
 
 
 def test_metadata_exposes_the_assumption_register():
@@ -70,6 +71,21 @@ def test_metadata_exposes_the_assumption_register():
         entry["status"] != "supplied"
         for entry in payload["assumptions_requiring_attention"]
     )
+
+
+def test_metadata_includes_cited_literature():
+    payload = client.get("/api/metadata").json()
+    literature = payload["literature"]
+    assert literature["ranges"]
+    assert any(item["kind"] == "bushing" for item in literature["ranges"])
+    assert literature["workbook_conflicts"]
+
+
+def test_literature_lookup_resolves_a_new_object_type():
+    body = client.get("/api/literature/lookup", params={"q": "420 kV bushing"}).json()
+    assert body["matched"] is True
+    assert any(item["kind"] == "bushing" for item in body["ranges"])
+    assert any(level["um_kv"] == 420.0 for level in body["insulation_levels"])
 
 
 def test_validate_accepts_the_workbook_example():

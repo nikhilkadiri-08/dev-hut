@@ -33,6 +33,7 @@ from backend.provenance import (
     Source,
     conflicting,
     from_dataset,
+    from_literature,
     from_problem_statement,
     placeholder,
     supplied,
@@ -197,10 +198,12 @@ _HALF_VALUE_NOTE = (
 
 _SWITCHING_TAIL_CONFLICT = (
     "Workbook gate H13 applies +/-20% to the switching time to half-value (2000-3000 "
-    "us). IEC 60060-1 is generally understood to permit a substantially wider band for "
-    "switching impulses, so this window is probably too strict and will reject "
-    "configurations a real laboratory would accept. Do not present compliance results "
-    "for switching impulses as standard-conformant until this is checked."
+    "us). Public citations of IEC 60060-1:2010 (MDPI Energies 15:4760, 2022; IEEE "
+    "switching-impulse measuring-system paper, 2020) use +/-60% (1000-4000 us). The "
+    "workbook window is therefore stricter than the cited edition and will reject "
+    "configurations a laboratory following that edition would accept. The optimiser "
+    "still uses H13 so the synthetic dataset stays consistent; compare against the "
+    "literature window separately."
 )
 
 _PEAK_NOTE = (
@@ -226,9 +229,11 @@ _SWITCHING_FRONT_DEFINITION = (
 STANDARD_ID = "IEC_60060-1"
 STANDARD_LABEL = "IEC 60060-1 - High-voltage test techniques, general definitions"
 STANDARD_EDITION_NOTE = (
-    "Edition not supplied with the project material. The applicable edition must be "
-    "confirmed, since tolerance values and the definition of the front time have "
-    "changed between editions."
+    "Edition not supplied with the project material. Public sources document "
+    "IEC 60060-1:2010 (lightning 1.2/50 +/-30%/+/-20%, switching 250/2500 +/-20%/"
+    "+/-60%) and IEC 60060-1:2025 (switching redefined as 170/2500 us; lightning "
+    "front +100% for Um > 800 kV). Confirm which edition the laboratory uses before "
+    "treating a pass/fail as standard-conformant."
 )
 
 IMPULSE_SPECS: dict[str, ImpulseSpec] = {
@@ -355,6 +360,8 @@ class TestObjectType:
     typical_min_pf: float
     typical_max_pf: float
     provenance: Provenance
+    literature_kind: str | None = None
+    """Key into ``physics_model.literature.typical_ranges``, if any."""
 
     def to_dict(self) -> dict:
         return {
@@ -365,6 +372,7 @@ class TestObjectType:
             "typical_min_pf": self.typical_min_pf,
             "typical_max_pf": self.typical_max_pf,
             "provenance": self.provenance.to_dict(),
+            "literature_kind": self.literature_kind,
         }
 
 
@@ -375,6 +383,7 @@ def _placeholder_object(
     default_pf: float,
     low_pf: float,
     high_pf: float,
+    literature_kind: str | None = None,
 ) -> TestObjectType:
     return TestObjectType(
         id=object_id,
@@ -383,12 +392,13 @@ def _placeholder_object(
         default_load_capacitance_pf=default_pf,
         typical_min_pf=low_pf,
         typical_max_pf=high_pf,
+        literature_kind=literature_kind,
         provenance=placeholder(
             "not present in supplied material",
-            "Placeholder capacitance with no measured basis. The supplied material "
-            "gives only one worked value (850 pF, workbook cell B8) and the synthetic "
-            "dataset's 600-1250 pF sweep. Replace with measured values from the test "
-            "laboratory before this field is used for a real recommendation.",
+            "Form default only. The supplied material gives one worked load "
+            "(850 pF, workbook B8). Open literature for this object kind is in "
+            "data/literature/open_references.json and is shown as a hint, not as "
+            "a measured value. Replace with the laboratory measurement.",
         ),
     )
 
@@ -412,34 +422,44 @@ TEST_OBJECT_CATALOGUE: tuple[TestObjectType, ...] = (
     _placeholder_object(
         "cap_and_pin_string",
         "400 kV cap-and-pin insulator string",
-        "Suspension string of cap-and-pin discs.",
+        "Suspension string of cap-and-pin discs. Published per-disc self-capacitance "
+        "is 40-149 pF; a 22-24 disc string is a series connection, so the object "
+        "itself is a few picofarads. The form default is a test-circuit load, not "
+        "that self-capacitance.",
         700.0,
         600.0,
         900.0,
+        literature_kind="cap_and_pin_string",
     ),
     _placeholder_object(
         "long_rod_composite",
         "400 kV composite long-rod insulator",
-        "Polymeric long-rod insulator.",
+        "Polymeric long-rod insulator. One manufacturer lists 1425 kV lightning "
+        "impulse withstand (FXBW-400/160). No published capacitance was found.",
         650.0,
         600.0,
         800.0,
+        literature_kind="long_rod_composite",
     ),
     _placeholder_object(
         "station_post",
         "400 kV station post insulator",
-        "Rigid post insulator for substation support.",
+        "Rigid post insulator for substation support. One manufacturer lists 1550 kV "
+        "lightning impulse withstand. No published capacitance was found.",
         900.0,
         700.0,
         1100.0,
+        literature_kind="station_post",
     ),
     _placeholder_object(
         "bushing",
         "400 kV transformer bushing",
-        "Condenser-graded bushing. Appreciably more capacitive than a plain insulator.",
+        "Condenser-graded bushing. Published 400-420 kV OIP C1 examples are 370-489 pF. "
+        "Use the nameplate. The form default is a placeholder load, not those examples.",
         1100.0,
         900.0,
         1250.0,
+        literature_kind="bushing",
     ),
     TestObjectType(
         id="custom",
@@ -710,10 +730,11 @@ def build_assumption_register() -> AssumptionRegister:
         Assumption(
             key="test_objects.capacitance",
             subject="Test object capacitance defaults",
-            value="placeholder values for all catalogue entries except the workbook example",
-            provenance=placeholder(
-                "not present in supplied material",
-                "No per-test-object capacitance data exists in the supplied material.",
+            value="form defaults plus open-literature hints; only the workbook example is supplied",
+            provenance=from_literature(
+                "data/literature/open_references.json",
+                "Catalogue entries other than the workbook example now carry cited "
+                "typical ranges. Those ranges are not measurements of the test object.",
             ),
             impact=(
                 "Selecting a test object type pre-fills a capacitance with no measured "

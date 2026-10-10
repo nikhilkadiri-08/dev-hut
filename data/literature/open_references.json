@@ -1,0 +1,312 @@
+{
+  "disclaimer": "Published typical values and publicly cited standard figures. None of these are measurements of the laboratory generator or a CPRI specification. They never override a measured value or a workbook formula. Confirm against the laboratory nameplate and the applicable standard edition before using them for a real test.",
+  "retrieved": "2026-10-10",
+  "impulse_windows": [
+    {
+      "id": "iec_60060_1_2010_lightning",
+      "impulse_family": "lightning",
+      "edition": "IEC 60060-1:2010",
+      "designation": "1.2/50 us",
+      "front_time_us": 1.2,
+      "front_relative": 0.30,
+      "front_definition": "T1 = 1.67 * (t90 - t30)",
+      "tail_time_us": 50.0,
+      "tail_relative": 0.20,
+      "crest_relative": 0.03,
+      "keywords": ["lightning", "1.2/50", "li", "fast front"],
+      "sources": [
+        {
+          "title": "An investigation into the relevancy of the wave shape parameters used for lightning impulse tests",
+          "url": "https://oro.open.ac.uk/17767/1/CIGREV10.pdf",
+          "year": 2010,
+          "excerpt": "IEC 60-1 accepted differences: peak +/-3%, front time +/-30%, time to half-value +/-20%. T1 defined as 1.67 times the 30%-90% interval."
+        },
+        {
+          "title": "Nord-IS paper citing IEEE Std 4 and IEC 60060-1 lightning impulse tolerances",
+          "url": "https://www.ntnu.no/ojs/index.php/nordis/article/download/3282/3158",
+          "year": 2019,
+          "excerpt": "Standard lightning impulse T1 = 1.2 us +/-30% (0.84-1.56 us) and T2 = 50 us +/-20% (40-60 us)."
+        }
+      ]
+    },
+    {
+      "id": "iec_60060_1_2010_switching",
+      "impulse_family": "switching",
+      "edition": "IEC 60060-1:2010",
+      "designation": "250/2500 us",
+      "front_time_us": 250.0,
+      "front_relative": 0.20,
+      "front_definition": "Time to peak Tp from the actual origin to the crest, not the 30/90 construction.",
+      "tail_time_us": 2500.0,
+      "tail_relative": 0.60,
+      "crest_relative": 0.03,
+      "keywords": ["switching", "250/2500", "si", "slow front", "time to peak"],
+      "conflict_with_workbook": "Workbook H13 applies +/-20% to the switching tail (2000-3000 us). Public citations of IEC 60060-1:2010 use +/-60% (1000-4000 us).",
+      "sources": [
+        {
+          "title": "An Accurate Evaluation of Switching Impulse Voltages for High-Voltage Tests",
+          "url": "https://mdpi-res.com/d_attachment/energies/energies-15-04760/article_deploy/energies-15-04760.pdf?version=1656481457",
+          "year": 2022,
+          "excerpt": "Citing IEC 60060-1:2010, Tp = 250 us +/-20%, T2 = 2500 us +/-60%, Up +/-3%."
+        },
+        {
+          "title": "Reference Switching Impulse Voltage Measuring System Based on Correcting the Voltage Divider Response With Software",
+          "url": "https://ieeexplore.ieee.org/document/9123390",
+          "year": 2020,
+          "excerpt": "Standard SI voltage has Tp of 250 us +/-20% and T2 of 2500 us +/-60% per IEC 60060-1:2010."
+        }
+      ]
+    },
+    {
+      "id": "iec_60060_1_2025_changes",
+      "impulse_family": "edition_change",
+      "edition": "IEC 60060-1:2025",
+      "designation": "see IEC change list",
+      "front_time_us": null,
+      "front_relative": null,
+      "front_definition": "Switching impulse redefined with a front time; standard switching impulse becomes 170/2500 us. Lightning T1 positive tolerance extended to +100% (2.4 us) for Um > 800 kV.",
+      "tail_time_us": 2500.0,
+      "tail_relative": 0.60,
+      "crest_relative": 0.03,
+      "keywords": ["2025", "170/2500", "uhv", "800 kv"],
+      "sources": [
+        {
+          "title": "IEC 60060-1:2025 High-voltage test techniques - Part 1",
+          "url": "https://webstore.iec.ch/en/publication/65088",
+          "year": 2025,
+          "excerpt": "Official change list: LI front-time positive tolerance +100% for Um > 800 kV; SI redefined as 170/2500 us with a front-time definition."
+        }
+      ]
+    }
+  ],
+  "insulation_levels": [
+    {
+      "id": "iec_60071_1_um_300",
+      "um_kv": 300,
+      "standard_switching_impulse_kv": [750, 850],
+      "standard_lightning_impulse_kv": [850, 950, 1050],
+      "keywords": ["300 kv", "um 300"],
+      "source": {
+        "title": "IS/IEC 60071-1 (2006) Insulation co-ordination, Table 3",
+        "url": "https://law.resource.org/pub/in/bis/S05/is.iec.60071.1.2006.pdf",
+        "year": 2006,
+        "excerpt": "Public Indian republication of IEC 60071-1 Table 3, range II, Um = 300 kV."
+      }
+    },
+    {
+      "id": "iec_60071_1_um_362",
+      "um_kv": 362,
+      "standard_switching_impulse_kv": [850, 950],
+      "standard_lightning_impulse_kv": [950, 1050, 1175],
+      "keywords": ["362 kv", "um 362"],
+      "source": {
+        "title": "IS/IEC 60071-1 (2006) Insulation co-ordination, Table 3",
+        "url": "https://law.resource.org/pub/in/bis/S05/is.iec.60071.1.2006.pdf",
+        "year": 2006,
+        "excerpt": "Public Indian republication of IEC 60071-1 Table 3, range II, Um = 362 kV."
+      }
+    },
+    {
+      "id": "iec_60071_1_um_420",
+      "um_kv": 420,
+      "standard_switching_impulse_kv": [850, 950, 1050],
+      "standard_lightning_impulse_kv": [1050, 1175, 1300, 1425],
+      "keywords": ["400 kv", "420 kv", "um 420"],
+      "source": {
+        "title": "IS/IEC 60071-1 (2006) Insulation co-ordination, Table 3",
+        "url": "https://law.resource.org/pub/in/bis/S05/is.iec.60071.1.2006.pdf",
+        "year": 2006,
+        "excerpt": "For Um = 420 kV, standard LIWV includes 1050, 1175, 1300 and 1425 kV; SIWV includes 850, 950 and 1050 kV. The workbook's 1425 kV lightning request is one of these listed levels, not a laboratory measurement. Further Um rows should be copied from the same table when a new voltage class arrives; do not interpolate."
+      }
+    }
+  ],
+  "test_objects": [
+    {
+      "id": "cap_and_pin_disc",
+      "kind": "cap_and_pin_string",
+      "label": "Cap-and-pin disc (self-capacitance of one disc)",
+      "quantity": "self_capacitance_pf",
+      "typical_min": 40.0,
+      "typical_max": 149.0,
+      "unit": "pF",
+      "note": "These are per-disc values. A string of n discs is a series connection, so the two-terminal capacitance is roughly C_disc/n plus stray, typically a few picofarads — not n times C_disc. The workbook's 850 pF is a test-circuit load, not this self-capacitance.",
+      "keywords": ["cap-and-pin", "disc", "suspension string", "porcelain", "glass insulator"],
+      "sources": [
+        {
+          "title": "Experimental, analytical and numerical analysis of voltage distribution along the cap-and-pin insulators",
+          "url": "https://www.researchgate.net/publication/337854214_Experimental_analytical_and_numerical_analysis_of_voltage_distribution_along_the_cap-and-pin_insulators",
+          "year": 2019,
+          "excerpt": "Parasite self-capacitance of a disc insulator estimated at about 40 pF."
+        },
+        {
+          "title": "Application of a genetic algorithm for calculating the capacitances on an insulator string",
+          "url": "http://users.ntua.gr/igonos/2003/WSEASbook457-468.pdf",
+          "year": 2003,
+          "excerpt": "Fitted disc capacitances C of 109.2, 149.0 and 130.6 pF on three experimental strings."
+        }
+      ]
+    },
+    {
+      "id": "cap_and_pin_400kv_string_length",
+      "kind": "cap_and_pin_string",
+      "label": "400 kV cap-and-pin string disc count",
+      "quantity": "discs",
+      "typical_min": 22.0,
+      "typical_max": 24.0,
+      "unit": "discs",
+      "note": "Utility stringing practice for 400 kV single suspension, not a capacitance. Combine with per-disc C only as C/n.",
+      "keywords": ["400 kv string", "number of discs", "23 disc"],
+      "sources": [
+        {
+          "title": "Stringing of conductors and earth wire (400 kV disc counts)",
+          "url": "https://www.yumpu.com/en/document/view/16264980/stringing-of-conductors-and-earth-wire",
+          "year": null,
+          "excerpt": "400 kV single suspension I-string: 1 x 23 discs; double suspension 2 x 24."
+        }
+      ]
+    },
+    {
+      "id": "composite_400kv_lightning_withstand",
+      "kind": "long_rod_composite",
+      "label": "400 kV composite long-rod lightning impulse withstand (manufacturer)",
+      "quantity": "lightning_impulse_withstand_kv",
+      "typical_min": 1425.0,
+      "typical_max": 1425.0,
+      "unit": "kV",
+      "note": "One manufacturer's FXBW-400/160 rating. Not a measured capacitance and not a CPRI value. Structure height 3315 +/-50 mm.",
+      "keywords": ["composite", "long-rod", "polymer", "fxbw", "400 kv insulator"],
+      "sources": [
+        {
+          "title": "400 kV composite suspension insulator FXBW-400/160",
+          "url": "https://www.composite-insulators.com/composite-insulator/composite-long-rod-insulator/400kv-composite-suspension-insulator-with.html",
+          "year": null,
+          "excerpt": "Lightning impulse withstand 1425 kV; structure height 3315 +/-50 mm; wet power-frequency 770 kV."
+        }
+      ]
+    },
+    {
+      "id": "station_post_400kv_lightning_withstand",
+      "kind": "station_post",
+      "label": "400 kV composite station post lightning impulse withstand (manufacturer)",
+      "quantity": "lightning_impulse_withstand_kv",
+      "typical_min": 1550.0,
+      "typical_max": 1550.0,
+      "unit": "kV",
+      "note": "One manufacturer's station-post rating. No published capacitance was found. Height 4174 +/-50 mm.",
+      "keywords": ["station post", "post insulator", "substation insulator"],
+      "sources": [
+        {
+          "title": "400 kV polymer substation insulator",
+          "url": "https://www.composite-insulators.com/composite-insulator/composite-station-post-insulator/400kv-polymer-substation-insulator.html",
+          "year": null,
+          "excerpt": "Lightning impulse withstand 1550 kV; height 4174 +/-50 mm; IEC 61952."
+        }
+      ]
+    },
+    {
+      "id": "condenser_bushing_c1",
+      "kind": "bushing",
+      "label": "400-420 kV OIP condenser bushing C1",
+      "quantity": "capacitance_pf",
+      "typical_min": 370.0,
+      "typical_max": 489.0,
+      "unit": "pF",
+      "note": "Nameplate C1 (HV to tap) from published examples. Use the bushing's own nameplate. This is a two-terminal capacitance, unlike a disc string.",
+      "keywords": ["bushing", "condenser", "oip", "rip", "transformer bushing", "c1"],
+      "sources": [
+        {
+          "title": "Condenser bushings condition monitoring, Transformers Magazine Special Edition",
+          "url": "https://transformers-magazine.com/",
+          "year": 2017,
+          "excerpt": "420 kV 1600 A OIP bushing C1 = 489 pF; 800 kV 2500 A OIP C1 = 463 pF."
+        },
+        {
+          "title": "Zustandsbewertung betriebsgealterter Hochspannungstransformatordurchfuhrungen (400 kV example)",
+          "url": "https://d-nb.info/",
+          "year": 2011,
+          "excerpt": "Worked 400 kV transformer bushing example uses a capacitance of 370 pF."
+        }
+      ]
+    },
+    {
+      "id": "impulse_divider_hv_arm",
+      "kind": "divider",
+      "label": "400 kV capacitive / damped-capacitive divider HV arm",
+      "quantity": "capacitance_pf",
+      "typical_min": 400.0,
+      "typical_max": 1200.0,
+      "unit": "pF",
+      "note": "Published HV-arm capacitances for laboratory dividers. The workbook's 500 pF sits in this band. Fast pulse dividers can be 6-15 pF and are a different class.",
+      "keywords": ["divider", "voltage divider", "damped capacitive", "measuring system"],
+      "sources": [
+        {
+          "title": "Reference switching-impulse measuring system (400 kV modular divider)",
+          "url": "https://ieeexplore.ieee.org/document/9123390",
+          "year": 2020,
+          "excerpt": "Three 1200 pF paper-oil modules, 140 kV peak each, stacked for 400 kV."
+        },
+        {
+          "title": "KRISS/NRC comparison of a 400 kV capacitive voltage divider",
+          "url": "https://www.nist.gov/",
+          "year": 2012,
+          "excerpt": "Each 200 kV unit has a high-voltage capacitor CH of nominal 1000 pF."
+        },
+        {
+          "title": "US6456094B2 capacitive divider for millisecond pulses",
+          "url": "https://patents.google.com/patent/US6456094B2/en",
+          "year": 2002,
+          "excerpt": "HV capacitor C1 for pulse voltages above 100 kV is typically 6 to 15 pF. Different class from a 400 kV impulse divider."
+        }
+      ]
+    }
+  ],
+  "circuit_typical": [
+    {
+      "id": "marx_voltage_efficiency",
+      "kind": "circuit",
+      "label": "Marx generator voltage efficiency",
+      "quantity": "efficiency",
+      "typical_min": 0.75,
+      "typical_max": 0.95,
+      "preferred_min": 0.80,
+      "unit": "fraction",
+      "note": "Published Marx voltage-efficiency band. The workbook's 0.82 sits inside it. Efficiency is still an operator input, not a derived quantity. One paper suggests keeping C2 below about 15% of erected C1 to stay above 80%.",
+      "keywords": ["efficiency", "eta", "voltage efficiency"],
+      "sources": [
+        {
+          "title": "Reconfiguration of 3 MV Marx Generator into a Modern High Efficiency System",
+          "url": "https://www.osti.gov/",
+          "year": 2015,
+          "excerpt": "Intrinsic efficiency approximated as exceeding 93%. To maintain efficiency above 80%, capacitive loads should not exceed 15% of the net series capacitance."
+        }
+      ]
+    },
+    {
+      "id": "marx_stray_inductance",
+      "kind": "circuit",
+      "label": "Laboratory impulse-generator stray inductance",
+      "quantity": "stray_inductance_uh",
+      "typical_min": 10.0,
+      "typical_max": 300.0,
+      "per_stage_uh": [1.0, 3.0],
+      "external_uh_per_m": 1.0,
+      "unit": "uH",
+      "note": "Published laboratory-generator inductance bands. The workbook's 18.5 uH is inside the total-circuit band. Measure the actual loop; do not adopt 18.5 uH for a different hall.",
+      "keywords": ["stray inductance", "loop inductance", "uh", "microhenry"],
+      "sources": [
+        {
+          "title": "Reconfiguration of 3 MV Marx Generator into a Modern High Efficiency System",
+          "url": "https://www.osti.gov/",
+          "year": 2015,
+          "excerpt": "Inductance can vary from 10 uH to several hundreds of uH; some multistage generators estimated at 3 uH/stage; external circuit including specimen roughly 1 uH/m. Example calculation uses L = 40 uH."
+        },
+        {
+          "title": "Characterization of Marx Generator (CPRI journal)",
+          "url": "https://cprijournal.in/",
+          "year": null,
+          "excerpt": "Ten-stage Marx total inductance 2.3 uH (compact / low-inductance construction, not a large impulse hall)."
+        }
+      ]
+    }
+  ]
+}

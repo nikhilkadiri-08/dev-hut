@@ -6,6 +6,7 @@ import {
   type OperatorForm,
 } from "../formState";
 import { Field, NumberField, TextField } from "./Field";
+import { LiteratureHint } from "./LiteratureHint";
 import { IssueList } from "./IssueList";
 import {
   AssumptionsPanel,
@@ -144,6 +145,11 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
               ) : null}
             </p>
           ) : null}
+          <LiteratureHint
+            selected={selectedObject}
+            ranges={metadata.literature?.ranges ?? []}
+            allowSearch={form.testObjectTypeId === "custom" || Boolean(selectedObject?.literature_kind)}
+          />
           <TextField
             label="Reference or serial number"
             value={form.testObjectLabel}

@@ -18,16 +18,121 @@ qualified engineer under the laboratory's approved test procedure.
 | Operator test-request interface | implemented |
 | Assumption and provenance register | implemented |
 | ML training-domain warnings | implemented |
-| Physics engine (`backend/physics.py`) | not started |
-| Residual ML model (`backend/ml_model.py`) | not started |
-| Candidate optimiser (`backend/optimizer.py`) | not started |
-| Compliance checker (`backend/compliance.py`) | not started |
-| Robustness analysis (`backend/robustness.py`) | not started |
+| Physics model (`physics_model/`) | implemented |
+| Configuration optimiser (`physics_model/optimiser.py`) | implemented |
+| Capacitor stress and safety checks | implemented, limited by missing ratings |
+| Waveform reconstruction | implemented, preliminary and labelled as such |
+| ML handoff contract (`physics_model/ml_interface.py`) | implemented, no model trained |
+| Residual ML model | not started |
+| Wiring the physics model into `POST /api/optimise` | not started |
 | Measured waveform import | not started |
+| Open-literature reference catalogue | implemented |
 
-`POST /api/optimise` exists and deliberately returns HTTP 501 so the frontend can
-integrate against the real endpoint without anyone mistaking a placeholder for a
+`POST /api/optimise` exists and deliberately returns HTTP 501. The physics model is
+implemented but not yet wired to it, so nobody can mistake a placeholder for a
 recommendation.
+
+## The physics model
+
+`physics_model/` is a standalone package, independent of the ML layer and the
+frontend. Every equation is a port of a specific cell in the supplied workbook, and
+the docstring of each function names that cell.
+
+| Workbook cell | Function | Nature |
+| --- | --- | --- |
+| `E7` | `total_load_capacitance` | physics, exact |
+| `E8` | `required_stages` | physics, exact |
+| `E9` | `charging_voltage_per_stage` | physics, exact |
+| `E10` | `stage_utilisation` | physics, exact |
+| `E11` | `generator_capacitance` | physics, exact for a series Marx |
+| `E12` | `theoretical_total_front_resistance` | algebraic inverse of `E18` |
+| `E15` | `theoretical_total_tail_resistance` | algebraic inverse of `E19` |
+| `E14`, `E17` | `snap_to_grid` | spreadsheet convenience, superseded |
+| `E18` | `front_time` | **empirical approximation** |
+| `E19` | `tail_time` | physics, standard first-order discharge |
+| `E20` | `crest_voltage` | **tautology, `=B7`, not a prediction** |
+| `H12` | `validation.safety_verdict` | hard constraint |
+| `H13` | `validation.quality_verdict` | tolerance windows, edition unconfirmed |
+| `H6`-`H8` | `ml_interface.apply_residuals` | hooks only, no model trained |
+
+Not in the workbook and added here: `stored_energy` (0.5·C·V²),
+`series_equivalent_capacitance`, the waveform reconstruction, the capacitor stress
+checks and the optimiser.
+
+### Why the optimiser is fast
+
+`E12` and `E15` are the exact algebraic inverses of `E18` and `E19`, so the required
+resistance is solved in closed form rather than searched for. Because both timing
+functions are strictly monotone in their resistance, the best buildable resistor is
+provably one of the two values bracketing that exact solution, found by binary
+search. Front time depends only on the front resistor and tail time only on the tail
+resistor in this model, so the two choices are independent.
+
+That gives `O(m log m)` once per inventory plus `O(S log m)` per request. On the
+worked example it evaluates 63 candidates where exhaustive enumeration needs 4,200,
+and `test_fast_search_finds_the_same_optimum_as_exhaustive_search` confirms the
+answer is identical to brute force.
+
+The independence of front and tail is a property of the *workbook's approximation*,
+not of a real generator. If the physics layer is ever replaced by a transient
+solver, that derivation stops holding and the search must be revisited.
+
+### Ranking for the fewest trips up the generator
+
+Candidates are ranked by how *centred* they sit in the acceptance window rather than
+merely by whether they fall inside it, because a configuration at the window edge
+passes the model and then fails the real shot, which costs a climb.
+
+The parameters also split by cost. Stage count and resistors are physical; the
+charging voltage is a control-desk setting. So `charging_voltage_trim` turns a
+predicted crest error into a revised charging voltage, which needs no physical
+change, and candidates that keep the currently installed resistors are credited for
+it. Climb penalties break ties and never override waveform quality, which
+`test_margin_is_never_sacrificed_to_avoid_a_climb_by_default` enforces.
+
+### What the ML layer receives
+
+`physics_model/ml_interface.py` emits a row in the exact schema of
+`data/synthetic_dataset.csv`: the nine features of the workbook's `ML Helper`
+columns A-I, plus the three physics baselines the residual model corrects. No
+adapter is needed and no model is trained here.
+
+```
+Impulse_Type Lightning   Test_kV 1425   Load_C_pF 850   Divider_C_pF 500
+Stray_C_pF 150   L_uH 18.5   Efficiency 0.82   Front_R_Stage 50   Tail_R_Stage 25
+Physics_FrontPeak_us 1.21003   Physics_Tail_us 52.2089   Physics_Crest_kV 1425
+```
+
+One asymmetry matters. Two of the three residuals correct a real model. The crest
+residual does not: because `E20` is `=B7`, it *is* the entire voltage-efficiency
+model, learned from data, and cannot be cross-checked against physics.
+
+### Open literature, for objects the workbook does not cover
+
+`data/literature/open_references.json` holds cited public values: IEC 60060-1:2010
+windows (lightning 1.2/50 ±30%/±20%, switching 250/2500 ±20%/±60%), the 2025
+edition change list, IEC 60071-1 Um tables including the 1425 kV lightning level
+for 420 kV equipment, published bushing C1 examples (370–489 pF), per-disc
+insulator capacitances, and typical Marx efficiency / inductance bands.
+
+`GET /api/literature/lookup?q=420%20kV%20bushing` matches a new description
+against that file. A miss returns no number. Literature never overrides a
+workbook formula or a value the operator typed. Add a new paper by appending
+JSON, not by hardcoding in Python.
+
+### Tests
+
+93 tests in `physics_model/test_physics_model.py`. No expectation is produced by
+calling the function under test. They come from the workbook's own cached cell
+values, from reproducing all 2000 rows of the synthetic dataset to within 1e-12,
+from mathematical properties (exact inverse round-trips, monotonicity, the `L -> 0`
+limit, and stored energy agreeing across the charge and discharge routes), and from
+brute force for the optimiser.
+
+None of this is evidence of real-world accuracy. The "observed" columns in the
+dataset were synthesised by perturbing the physics baseline, so the R² figures on
+the workbook's 'Model Validation' sheet measure self-consistency, not accuracy, and
+are not reproduced here as if they did.
 
 ## Two interfaces
 
@@ -106,6 +211,8 @@ frontend/src/     React dashboard: admin and operator views, validation results
 data/
   reference/      The supplied problem statement and workbook, unmodified
   synthetic_dataset.csv   The workbook's dataset, exported for the ML workstream
+physics_model/    Workbook-ported physics, optimiser, ML handoff, literature lookup
+data/literature/  Cited open-source typical values (not CPRI measurements)
 scripts/          Data-extraction utilities
 tests/            Validation and API tests
 ```

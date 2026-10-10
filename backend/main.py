@@ -8,7 +8,7 @@ before the physics engine exists, and so nobody can mistake a placeholder for a 
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -145,6 +145,7 @@ def metadata() -> dict:
             "expected_efficiency": config.DEFAULT_EFFICIENCY,
         },
         "ml_domain": config.ml_domain(),
+        "literature": _literature_payload(),
         "assumptions": config.ASSUMPTIONS.to_list(),
         "assumptions_requiring_attention": [
             entry.to_dict() for entry in config.ASSUMPTIONS.requiring_attention()
@@ -159,8 +160,32 @@ def metadata() -> dict:
             "compliance_checker": "not_implemented",
             "robustness_analysis": "not_implemented",
             "measured_waveform_import": "not_implemented",
+            "literature_catalogue": "implemented",
         },
     }
+
+
+def _literature_payload() -> dict:
+    from physics_model.literature import load_catalogue, workbook_conflicts
+
+    catalogue = load_catalogue()
+    payload = catalogue.to_dict()
+    payload["workbook_conflicts"] = workbook_conflicts()
+    return payload
+
+
+@app.get("/api/literature")
+def literature_catalogue() -> dict:
+    """Cited open-reference values for objects and editions the workbook does not cover."""
+    return _literature_payload()
+
+
+@app.get("/api/literature/lookup")
+def literature_lookup(q: str = Query(..., min_length=1, max_length=200)) -> dict:
+    """Match a new test object, voltage class or impulse type against the catalogue."""
+    from physics_model.literature import lookup
+
+    return lookup(q).to_dict()
 
 
 def _profile_response(stored) -> ProfileResponse:

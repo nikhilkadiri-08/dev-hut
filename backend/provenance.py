@@ -18,6 +18,7 @@ class Source(str, Enum):
     WORKBOOK = "workbook"
     DATASET = "dataset"
     STANDARD = "standard"
+    LITERATURE = "literature"
     ASSUMED = "assumed"
 
 
@@ -105,6 +106,11 @@ def from_problem_statement(locator: str, note: str = "") -> Provenance:
 
 def from_dataset(locator: str, note: str = "") -> Provenance:
     return Provenance(Source.DATASET, locator, Status.SUPPLIED, note)
+
+
+def from_literature(locator: str, note: str) -> Provenance:
+    """A public paper or openly cited standard table. Still needs laboratory check."""
+    return Provenance(Source.LITERATURE, locator, Status.NEEDS_VERIFICATION, note)
 
 
 def unverified(source: Source, locator: str, note: str) -> Provenance:

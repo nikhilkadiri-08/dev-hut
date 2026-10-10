@@ -92,6 +92,35 @@ export interface OptimiseOutcome {
   detail: string;
 }
 
+export async function lookupLiterature(query: string): Promise<{
+  query: string;
+  matched: boolean;
+  ranges: Array<{
+    id: string;
+    kind: string;
+    label: string;
+    quantity: string;
+    typical_min: number;
+    typical_max: number;
+    unit: string;
+    note: string;
+    sources: Array<{ title: string; url: string; year: number | null }>;
+  }>;
+  insulation_levels: Array<{
+    um_kv: number;
+    standard_lightning_impulse_kv: number[];
+    standard_switching_impulse_kv: number[];
+  }>;
+  windows: Array<{ id: string; designation: string; edition: string }>;
+  caveats: Array<{ code: string; message: string }>;
+}> {
+  const response = await send(`/api/literature/lookup?q=${encodeURIComponent(query)}`, "GET");
+  if (!response.ok) {
+    throw new ApiError(`Literature lookup failed (HTTP ${response.status}).`);
+  }
+  return readJson(response);
+}
+
 export async function runOptimisation(payload: unknown): Promise<OptimiseOutcome> {
   const response = await send("/api/optimise", "POST", payload);
   const body = await readJson<{ detail?: string }>(response);
