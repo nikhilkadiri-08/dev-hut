@@ -32,6 +32,8 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
   const [validating, setValidating] = useState(false);
   const [transportError, setTransportError] = useState<string | null>(null);
   const [optimiseMessage, setOptimiseMessage] = useState<string | null>(null);
+  const [optimiseImplemented, setOptimiseImplemented] = useState(false);
+  const [optimiseMode, setOptimiseMode] = useState<string | null>(null);
 
   const payload = useMemo(() => buildOperatorPayload(form), [form]);
   const payloadKey = useMemo(() => JSON.stringify(payload), [payload]);
@@ -85,11 +87,16 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
 
   const onOptimise = useCallback(async () => {
     setOptimiseMessage(null);
+    setOptimiseImplemented(false);
+    setOptimiseMode(null);
     try {
       const outcome = await runOptimisation(latestPayload.current);
       setOptimiseMessage(outcome.detail);
+      setOptimiseImplemented(outcome.implemented);
+      setOptimiseMode(outcome.mode ?? null);
     } catch {
       setOptimiseMessage("Could not reach the optimisation endpoint.");
+      setOptimiseImplemented(false);
     }
   }, []);
 
@@ -309,13 +316,19 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
           </button>
           <p className="actions__note">
             {result?.ok
-              ? "Inputs are accepted. The optimisation pipeline is still being built."
+              ? "Inputs are accepted. Optimisation uses the physics model only until a residual model is loaded."
               : "Fix the blocking problems before running the optimisation."}
           </p>
         </div>
         {optimiseMessage ? (
-          <section className="card card--pending">
-            <h3 className="card__title">Not implemented yet</h3>
+          <section className={`card ${optimiseImplemented ? "card--quiet" : "card--pending"}`}>
+            <h3 className="card__title">
+              {optimiseImplemented
+                ? optimiseMode === "physics_only"
+                  ? "Physics-only result"
+                  : "Optimisation result"
+                : "Optimisation could not run"}
+            </h3>
             <p className="card__body">{optimiseMessage}</p>
           </section>
         ) : null}

@@ -23,14 +23,17 @@ qualified engineer under the laboratory's approved test procedure.
 | Capacitor stress and safety checks | implemented, limited by missing ratings |
 | Waveform reconstruction | implemented, preliminary and labelled as such |
 | ML handoff contract (`physics_model/ml_interface.py`) | implemented, no model trained |
-| Residual ML model | not started |
-| Wiring the physics model into `POST /api/optimise` | not started |
+| Residual ML model | not started (optional; kNN is spreadsheet documentation only) |
+| Wiring the physics model into `POST /api/optimise` | implemented, physics-only until a residual artifact is injected |
 | Measured waveform import | not started |
 | Open-literature reference catalogue | implemented |
 
-`POST /api/optimise` exists and deliberately returns HTTP 501. The physics model is
-implemented but not yet wired to it, so nobody can mistake a placeholder for a
-recommendation.
+`POST /api/optimise` runs the existing `physics_model.optimiser`. It is labelled
+`physics_only` unless a residual-model object has been injected at process start.
+No model is trained or downloaded with the application. A candidate is
+`recommended` only when every applicable hard safety check is evaluable and
+passing; otherwise the best buildable point is returned as `best_unconfirmed`
+and is never labelled safe.
 
 ## The physics model
 
@@ -186,7 +189,49 @@ npm run dev          # http://localhost:5173, proxies /api to port 8000
 Tests:
 
 ```bash
-.venv/bin/python -m pytest
+cd /Users/nikhilkadiri/dev-hut-1
+.venv/bin/python -m pytest -q
+```
+
+`POST /api/physics/predict` and `POST /api/optimise` call `physics_model` functions.
+They do not re-implement the workbook equations. Laboratory units stay on the
+wire (`kV`, `pF`, `uF`, `uH`, `ohm`, `us`); conversion to SI happens in
+`backend/units.py`.
+
+### API
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/health` | `status`, `version`, physics import, ML loaded (false by default). ML absence is not a failure. |
+| GET | `/api/metadata` | Form catalogues, limits, assumptions, capabilities. |
+| POST | `/api/validate` | Fully specified request. |
+| POST | `/api/test-request/validate` | Operator request + stored profile. |
+| GET/PUT/POST | `/api/admin/profile` | Save / read / reset generator setup. |
+| GET | `/api/generator/profile` | Same stored profile plus assumed/unknown provenance. Does not invent ratings. |
+| POST | `/api/physics/predict` | One configuration through `physics_model.calculations.predict`. |
+| POST | `/api/optimise` | Validate → physics → optional residual hook → optimiser → safety gate. |
+
+Predict and optimise success bodies use `success`, `mode`, `predictions`, `units`,
+`warnings`, and `metadata` (`physics_model_used`, `ml_model_used`). Crest is the
+loaded estimate `N × V_stage × η`, not the request. Workbook E20 is returned
+separately as `workbook_echo_crest_kv`.
+
+Errors: HTTP 422 for schema and input problems (same `ok` / `errors` shape as
+the rest of the API where practical; optimise also returns
+`{success: false, error: {code, message, details}}`). HTTP 500 is a structured
+`PHYSICS_ERROR` with no stack trace. Nothing here operates hardware.
+
+### Plugging in a residual ML artifact later
+
+Do not use the workbook kNN. Implement an object with
+`predict_residuals(handoff) -> ResidualCorrection` and call
+`backend.ml_runtime.set_residual_model(instance)` when the process starts.
+If nothing is set, optimise stays `physics_only` with `ml_model_used: false`.
+
+### Physics tests
+
+```bash
+.venv/bin/python -m pytest physics_model -q
 ```
 
 Regenerate the ML training-domain file after changing the dataset:
@@ -205,6 +250,8 @@ backend/
   schemas.py      Request/response contracts shared by all five workstreams
   validation.py   Input checking, normalisation, out-of-domain warnings
   store.py        Persistence for the saved generator setup
+  pipeline.py     Thin adapter from API schemas to physics_model
+  ml_runtime.py   Optional residual-model hook (unset by default)
   main.py         FastAPI app
   data/           ml_domain.json, generated from the training split
 frontend/src/     React dashboard: admin and operator views, validation results

@@ -87,9 +87,26 @@ export async function resetProfile(): Promise<ProfileResponse> {
   return readProfile(await send("/api/admin/profile/reset", "POST"));
 }
 
+export interface OptimiseCandidate {
+  stages: number;
+  charging_voltage_per_stage_kv: number;
+  front_resistance_per_stage_ohm: number;
+  tail_resistance_per_stage_ohm: number;
+  front_time_us: number;
+  tail_time_us: number;
+  crest_voltage_kv: number;
+  confirmed_safe: boolean;
+  safety_label: string;
+  presentation: string;
+}
+
 export interface OptimiseOutcome {
   implemented: boolean;
   detail: string;
+  success?: boolean;
+  mode?: string;
+  candidate?: OptimiseCandidate | null;
+  warnings?: Array<{ code: string; message: string }>;
 }
 
 export async function lookupLiterature(query: string): Promise<{
@@ -123,9 +140,36 @@ export async function lookupLiterature(query: string): Promise<{
 
 export async function runOptimisation(payload: unknown): Promise<OptimiseOutcome> {
   const response = await send("/api/optimise", "POST", payload);
-  const body = await readJson<{ detail?: string }>(response);
+  const body = await readJson<{
+    detail?: string;
+    success?: boolean;
+    mode?: string;
+    candidate?: OptimiseCandidate | null;
+    recommended?: OptimiseCandidate | null;
+    best_unconfirmed?: OptimiseCandidate | null;
+    warnings?: Array<{ code: string; message: string }>;
+    error?: { message?: string };
+    errors?: Array<{ message?: string }>;
+  }>(response);
+  if (response.ok && body.success !== false) {
+    return {
+      implemented: true,
+      detail: body.detail ?? "Physics-only optimisation completed.",
+      success: true,
+      mode: body.mode,
+      candidate: body.candidate ?? body.recommended ?? body.best_unconfirmed ?? null,
+      warnings: body.warnings,
+    };
+  }
+  const validationMessage = body.errors?.map((item) => item.message).filter(Boolean).join(" ");
   return {
-    implemented: response.ok,
-    detail: body.detail ?? `Unexpected response (HTTP ${response.status}).`,
+    implemented: false,
+    detail:
+      body.detail ??
+      body.error?.message ??
+      validationMessage ??
+      `Unexpected response (HTTP ${response.status}).`,
+    success: false,
+    mode: body.mode,
   };
 }

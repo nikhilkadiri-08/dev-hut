@@ -1,9 +1,8 @@
 """FastAPI application.
 
-Currently exposes the input layer only: metadata that drives the form, and validation
-of a submitted test request. ``POST /api/optimise`` is deliberately wired up and
-deliberately returns 501, so the frontend can integrate against the real endpoint
-before the physics engine exists, and so nobody can mistake a placeholder for a result.
+Input validation, the stored generator profile, and a physics-only prediction /
+optimisation pipeline that calls ``physics_model`` rather than re-deriving formulas.
+No hardware control. A residual ML model is optional and is not loaded by default.
 """
 
 from __future__ import annotations
@@ -12,12 +11,22 @@ from fastapi import FastAPI, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from starlette.requests import Request
 
 from backend import config, store
+from backend.ml_runtime import get_residual_model
+from backend.pipeline import (
+    PipelineError,
+    optimise_from_request,
+    physics_import_status,
+    predict_from_body,
+    profile_provenance,
+)
 from backend.schemas import (
     IssueOut,
     OperatorRequestIn,
+    PhysicsPredictIn,
     ProfileResponse,
     ProfileUpdateIn,
     TestRequestIn,
@@ -98,7 +107,17 @@ def root() -> dict:
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "version": app.version}
+    """Liveness plus whether the physics package imported. ML absence is not a failure."""
+    physics = physics_import_status()
+    return {
+        "status": "ok",
+        "version": app.version,
+        "physics_model": physics,
+        "ml_model": {
+            "loaded": get_residual_model() is not None,
+            "used_by_default": False,
+        },
+    }
 
 
 @app.get("/api/metadata")
@@ -154,9 +173,9 @@ def metadata() -> dict:
             "validation": "implemented",
             "admin_generator_setup": "implemented",
             "operator_test_request": "implemented",
-            "physics_engine": "not_implemented",
+            "physics_engine": "implemented",
             "ml_residual_model": "not_implemented",
-            "candidate_optimiser": "not_implemented",
+            "candidate_optimiser": "implemented",
             "compliance_checker": "not_implemented",
             "robustness_analysis": "not_implemented",
             "measured_waveform_import": "not_implemented",
@@ -204,6 +223,19 @@ def _profile_response(stored) -> ProfileResponse:
 def read_profile() -> ProfileResponse:
     """The laboratory's saved generator setup, with its validation status."""
     return _profile_response(store.load_profile())
+
+
+@app.get("/api/generator/profile")
+def read_generator_profile() -> dict:
+    """Alias of the stored admin profile, plus assumed/unknown provenance.
+
+    Does not invent ratings or inventory. ``verified`` is always false: this
+    application has no laboratory verification workflow.
+    """
+    stored = store.load_profile()
+    body = _profile_response(stored).model_dump()
+    body["provenance"] = profile_provenance(stored)
+    return body
 
 
 @app.put("/api/admin/profile", response_model=ProfileResponse)
@@ -269,23 +301,137 @@ def validate(request: TestRequestIn) -> ValidationResponse:
     return validate_request(request)
 
 
-@app.post("/api/optimise", status_code=501)
-def optimise(request: TestRequestIn) -> JSONResponse:
-    """Placeholder for the optimisation pipeline.
-
-    Validates the request so the frontend sees real validation behaviour, then refuses
-    rather than returning a fabricated recommendation.
-    """
-    report = validate_request(request)
-    return JSONResponse(
-        status_code=501,
-        content={
-            "detail": (
-                "The optimisation pipeline is not implemented yet. The physics engine, "
-                "residual model, candidate optimiser and compliance checker are still "
-                "to be built, and this endpoint will not return a recommendation until "
-                "they exist."
-            ),
-            "validation": report.model_dump(),
+def _pipeline_error_response(exc: PipelineError) -> JSONResponse:
+    payload = {
+        "success": False,
+        "error": {
+            "code": exc.code,
+            "message": exc.message,
+            "details": exc.details,
         },
-    )
+        "detail": exc.message,
+        "metadata": {
+            "physics_model_used": True,
+            "ml_model_used": get_residual_model() is not None,
+        },
+    }
+    return JSONResponse(status_code=exc.http_status, content=payload)
+
+
+def _reraise_schema_error(exc: ValidationError) -> None:
+    raise RequestValidationError(exc.errors()) from exc
+
+
+@app.post("/api/physics/predict")
+def physics_predict(body: PhysicsPredictIn) -> JSONResponse:
+    """Run one configuration through ``physics_model.calculations.predict``.
+
+    Crest is the preliminary loaded estimate ``N * V_stage * eta``, not the
+    requested voltage. Workbook E20 is returned separately and labelled as an echo.
+    """
+    try:
+        payload = predict_from_body(body)
+    except PipelineError as exc:
+        if exc.http_status >= 500:
+            return _pipeline_error_response(exc)
+        issues = [
+            IssueOut(
+                severity="error",
+                code=exc.code,
+                message=exc.message,
+            )
+        ]
+        return JSONResponse(
+            status_code=422,
+            content=ValidationResponse(ok=False, errors=issues).model_dump(),
+        )
+    except Exception:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": {
+                    "code": "PHYSICS_ERROR",
+                    "message": "The physics model raised an unexpected error.",
+                    "details": [],
+                },
+                "detail": "The physics model raised an unexpected error.",
+            },
+        )
+    return JSONResponse(status_code=200, content=payload)
+
+
+@app.post("/api/optimise")
+async def optimise_endpoint(request: Request) -> JSONResponse:
+    """Physics-only catalogue search, unless a residual model has been injected.
+
+    Accepts either a fully specified ``TestRequestIn`` (``circuit`` present) or an
+    operator request that is merged with the stored generator profile. A candidate
+    is ``recommended`` only when every applicable hard safety check is evaluable
+    and passing. No hardware is controlled.
+    """
+    try:
+        raw = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=422,
+            content=ValidationResponse(
+                ok=False,
+                errors=[
+                    IssueOut(
+                        severity="error",
+                        code="SCHEMA_JSON",
+                        message="Request body must be JSON.",
+                    )
+                ],
+            ).model_dump(),
+        )
+
+    if not isinstance(raw, dict):
+        return JSONResponse(
+            status_code=422,
+            content=ValidationResponse(
+                ok=False,
+                errors=[
+                    IssueOut(
+                        severity="error",
+                        code="SCHEMA_JSON",
+                        message="Request body must be a JSON object.",
+                    )
+                ],
+            ).model_dump(),
+        )
+
+    try:
+        if "circuit" in raw:
+            body = TestRequestIn.model_validate(raw)
+        else:
+            operator = OperatorRequestIn.model_validate(raw)
+            body = merge_operator_request(operator, store.load_profile().profile)
+    except ValidationError as exc:
+        _reraise_schema_error(exc)
+
+    try:
+        payload = optimise_from_request(body)
+    except PipelineError as exc:
+        return _pipeline_error_response(exc)
+    except Exception:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": {
+                    "code": "PHYSICS_ERROR",
+                    "message": (
+                        "The physics optimiser raised an unexpected error. "
+                        "No settings were fabricated."
+                    ),
+                    "details": [],
+                },
+                "detail": (
+                    "The physics optimiser raised an unexpected error. "
+                    "No settings were fabricated."
+                ),
+            },
+        )
+    return JSONResponse(status_code=200, content=payload)

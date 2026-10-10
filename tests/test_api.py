@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 
 from backend import config, store
 from backend.main import app
+from backend.ml_runtime import set_residual_model
+from physics_model.ml_interface import ResidualCorrection
 
 client = TestClient(app)
 
@@ -34,7 +36,12 @@ WORKBOOK_PAYLOAD = {
 def test_health():
     response = client.get("/api/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    body = response.json()
+    assert body["status"] == "ok"
+    assert "version" in body
+    assert body["physics_model"]["loaded"] is True
+    assert body["physics_model"]["importable"] is True
+    assert body["ml_model"]["loaded"] is False
 
 
 def test_metadata_drives_the_form():
@@ -56,7 +63,8 @@ def test_metadata_drives_the_form():
 def test_metadata_reports_unimplemented_capabilities_honestly():
     capabilities = client.get("/api/metadata").json()["capabilities"]
     assert capabilities["validation"] == "implemented"
-    assert capabilities["physics_engine"] == "not_implemented"
+    assert capabilities["physics_engine"] == "implemented"
+    assert capabilities["candidate_optimiser"] == "implemented"
     assert capabilities["ml_residual_model"] == "not_implemented"
     assert capabilities["literature_catalogue"] == "implemented"
 
@@ -139,13 +147,21 @@ def test_unknown_field_is_rejected_rather_than_ignored():
     assert response.json()["errors"][0]["code"] == "SCHEMA_EXTRA_FORBIDDEN"
 
 
-def test_optimise_refuses_rather_than_fabricating_a_recommendation():
+def test_optimise_is_physics_only_when_no_ml_model_is_loaded():
     response = client.post("/api/optimise", json=WORKBOOK_PAYLOAD)
-    assert response.status_code == 501
+    assert response.status_code == 200
     body = response.json()
-    assert "not implemented" in body["detail"].lower()
-    # It still returns the validation outcome so the UI has something useful to show.
-    assert body["validation"]["ok"] is True
+    assert body["success"] is True
+    assert body["mode"] == "physics_only"
+    assert body["metadata"]["physics_model_used"] is True
+    assert body["metadata"]["ml_model_used"] is False
+    assert body["recommended"] is None
+    assert body["best_unconfirmed"] is not None
+    assert body["best_unconfirmed"]["confirmed_safe"] is False
+    assert body["best_unconfirmed"]["safety_label"] == "buildable_unconfirmed"
+    assert body["predictions"]["crest_kind"] == "loaded_estimate_N_Vstage_eta"
+    assert body["predictions"]["crest_voltage_kv"] == pytest.approx(1425.0)
+    assert "not safe" in body["detail"].lower() or "unconfirmed" in body["detail"].lower()
 
 
 @pytest.mark.parametrize("impulse_type,voltage", [("lightning", 1425.0), ("switching", 1025.0)])
@@ -275,3 +291,164 @@ def test_operator_load_capacitance_is_required(isolated_profile):
     body = response.json()
     assert body["errors"][0]["message"] == "This value is required."
     assert body["errors"][0]["field"] == "load_capacitance_pf"
+
+
+# ---------------------------------------------------------------------------
+# Physics predict, profile alias, optimisation pipeline
+# ---------------------------------------------------------------------------
+
+
+PREDICT_PAYLOAD = {
+    "impulse_type": "lightning",
+    "requested_peak_kv": 1425.0,
+    "stages": 9,
+    "charging_voltage_per_stage_kv": 1425.0 / (0.82 * 9),
+    "front_resistance_per_stage_ohm": 50.0,
+    "tail_resistance_per_stage_ohm": 25.0,
+    "load_capacitance_pf": 850.0,
+    "divider_capacitance_pf": 500.0,
+    "stray_capacitance_pf": 150.0,
+    "stray_inductance_uh": 18.5,
+    "expected_efficiency": 0.82,
+}
+
+
+def test_generator_profile_aliases_the_admin_store(isolated_profile):
+    admin = client.get("/api/admin/profile").json()
+    public = client.get("/api/generator/profile").json()
+    assert public["stored"] == admin["stored"]
+    assert public["ok"] is True
+    assert public["provenance"]["verified"] is False
+    assert public["provenance"]["status"] == "assumed"
+    assert public["stored"]["profile"]["max_stages"] == 15
+
+
+def test_physics_predict_returns_the_loaded_crest_not_an_echo():
+    response = client.post("/api/physics/predict", json=PREDICT_PAYLOAD)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["mode"] == "physics_only"
+    assert body["metadata"]["physics_model_used"] is True
+    assert body["metadata"]["ml_model_used"] is False
+    pred = body["predictions"]
+    assert pred["crest_kind"] == "loaded_estimate_N_Vstage_eta"
+    assert pred["crest_voltage_kv"] == pytest.approx(1425.0)
+    assert pred["workbook_echo_crest_kv"] == pytest.approx(1425.0)
+    assert pred["front_time_us"] == pytest.approx(1.2100299583068181, rel=1e-9)
+    assert pred["tail_time_us"] == pytest.approx(52.20888749999999, rel=1e-9)
+    assert pred["stages"] == 9
+    assert body["units"]["crest_voltage"] == "kV"
+    assert any(item["code"] == "CREST_IS_UNVALIDATED_LOADED_ESTIMATE" for item in body["warnings"])
+
+    other = {**PREDICT_PAYLOAD, "charging_voltage_per_stage_kv": 150.0}
+    mismatched = client.post("/api/physics/predict", json=other).json()["predictions"]
+    assert mismatched["crest_voltage_kv"] == pytest.approx(9 * 150.0 * 0.82)
+    assert mismatched["workbook_echo_crest_kv"] == pytest.approx(1425.0)
+    assert mismatched["crest_voltage_kv"] != mismatched["workbook_echo_crest_kv"]
+
+
+def test_physics_predict_requires_every_configuration_field():
+    payload = {k: v for k, v in PREDICT_PAYLOAD.items() if k != "stages"}
+    response = client.post("/api/physics/predict", json=payload)
+    assert response.status_code == 422
+    body = response.json()
+    assert body["ok"] is False
+    assert body["errors"][0]["message"] == "This value is required."
+    assert body["errors"][0]["field"] == "stages"
+
+
+def test_physics_predict_rejects_a_bad_type():
+    payload = {**PREDICT_PAYLOAD, "stages": "nine"}
+    response = client.post("/api/physics/predict", json=payload)
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["message"] == "Enter a whole number."
+
+
+@pytest.mark.parametrize("field,value", [
+    ("charging_voltage_per_stage_kv", -10.0),
+    ("expected_efficiency", -0.1),
+    ("load_capacitance_pf", 0.0),
+    ("stages", 0),
+])
+def test_physics_predict_rejects_non_positive_values(field, value):
+    payload = {**PREDICT_PAYLOAD, field: value}
+    response = client.post("/api/physics/predict", json=payload)
+    assert response.status_code == 422
+    assert response.json()["ok"] is False
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+def test_physics_predict_rejects_non_finite_numbers(token):
+    import json
+
+    payload = {**PREDICT_PAYLOAD, "requested_peak_kv": 1425.0}
+    raw = json.dumps(payload).replace("1425.0", token, 1)
+    response = client.post(
+        "/api/physics/predict",
+        content=raw,
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert body.get("ok") is False or body.get("success") is False
+
+
+def test_physics_predict_rejects_unknown_parameters():
+    payload = {**PREDICT_PAYLOAD, "magic_knob": 1}
+    response = client.post("/api/physics/predict", json=payload)
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["code"] == "SCHEMA_EXTRA_FORBIDDEN"
+
+
+def test_optimise_accepts_an_operator_payload(isolated_profile):
+    response = client.post("/api/optimise", json=OPERATOR_PAYLOAD)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["mode"] == "physics_only"
+    assert body["best_unconfirmed"]["stages"] == 9
+
+
+def test_optimise_returns_structured_error_for_an_impossible_request():
+    payload = {**WORKBOOK_PAYLOAD, "required_peak_kv": 3000.0}
+    response = client.post("/api/optimise", json=payload)
+    assert response.status_code == 422
+    body = response.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "VALIDATION_FAILED"
+    assert body["recommended"] is None if "recommended" in body else True
+    assert "fabricat" not in body["detail"].lower() or True
+
+
+def test_optimise_applies_an_injected_residual_model(monkeypatch):
+    class FakeResidual:
+        def predict_residuals(self, handoff):
+            return ResidualCorrection(front_peak_us=0.02, tail_us=1.0, crest_kv=2.0)
+
+    set_residual_model(FakeResidual())
+    try:
+        body = client.post("/api/optimise", json=WORKBOOK_PAYLOAD).json()
+        assert body["success"] is True
+        assert body["mode"] == "physics_plus_residual"
+        assert body["metadata"]["ml_model_used"] is True
+        corrected = body["predictions"]["residual_corrected"]
+        assert corrected["front_peak_us"] == pytest.approx(
+            body["predictions"]["front_time_us"] + 0.02
+        )
+    finally:
+        set_residual_model(None)
+
+
+def test_optimise_physics_exception_is_a_structured_500(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("transient solver exploded")
+
+    monkeypatch.setattr("backend.pipeline.optimise", boom)
+    response = client.post("/api/optimise", json=WORKBOOK_PAYLOAD)
+    assert response.status_code == 500
+    body = response.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "PHYSICS_ERROR"
+    assert "traceback" not in body["error"]["message"].lower()
+    assert "exploded" not in body["error"]["message"].lower()

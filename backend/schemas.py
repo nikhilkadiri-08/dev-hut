@@ -8,9 +8,10 @@ that the engineer gets an explanatory engineering message instead of a schema er
 
 from __future__ import annotations
 
+import math
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend import config
 
@@ -317,6 +318,76 @@ class ProfileResponse(BaseModel):
     warnings: list[IssueOut] = Field(default_factory=list)
     notices: list[IssueOut] = Field(default_factory=list)
     reach: Optional[ProfileReachOut] = None
+
+
+class PredictRatingsIn(BaseModel):
+    """Generator ratings for a one-shot physics prediction.
+
+    All fields are required when this object is present. Omitting the whole
+    object means the stored laboratory profile is used instead — that is not
+    a silent numeric default.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_stages: int
+    min_active_stages: int
+    max_stage_voltage_kv: float
+    stage_capacitance_uf: float
+    capacitors_per_stage: int
+
+
+class PhysicsPredictIn(BaseModel):
+    """One fully specified configuration for ``POST /api/physics/predict``.
+
+    Every numeric field that the physics functions need is required. There are
+    no laboratory-unit defaults on this model.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    impulse_type: ImpulseType
+    requested_peak_kv: float
+    stages: int
+    charging_voltage_per_stage_kv: float
+    front_resistance_per_stage_ohm: float
+    tail_resistance_per_stage_ohm: float
+    load_capacitance_pf: float
+    divider_capacitance_pf: float
+    stray_capacitance_pf: float
+    stray_inductance_uh: float
+    expected_efficiency: float
+    ratings: Optional[PredictRatingsIn] = None
+
+    @field_validator(
+        "requested_peak_kv",
+        "charging_voltage_per_stage_kv",
+        "front_resistance_per_stage_ohm",
+        "tail_resistance_per_stage_ohm",
+        "load_capacitance_pf",
+        "divider_capacitance_pf",
+        "stray_capacitance_pf",
+        "stray_inductance_uh",
+        "expected_efficiency",
+    )
+    @classmethod
+    def _finite_float(cls, value: float) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("Enter a number.")
+        if not math.isfinite(float(value)):
+            raise ValueError("Enter a finite number.")
+        return float(value)
+
+
+class ApiErrorBody(BaseModel):
+    code: str
+    message: str
+    details: list[IssueOut] = Field(default_factory=list)
+
+
+class PhysicsApiMetadata(BaseModel):
+    physics_model_used: bool = True
+    ml_model_used: bool = False
 
 
 def merge_operator_request(
