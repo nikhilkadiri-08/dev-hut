@@ -17,6 +17,7 @@ needed to answer "can this generator reach the requested voltage at all".
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from backend import config
@@ -24,8 +25,11 @@ from backend.schemas import (
     AcceptanceWindowOut,
     DerivedQuantitiesOut,
     DomainCheckOut,
+    GeneratorProfile,
     IssueOut,
     NormalizedRequestOut,
+    ProfileReachOut,
+    ResistorStockIn,
     TestRequestIn,
     ValidationResponse,
 )
@@ -322,46 +326,90 @@ def _check_generator(request: TestRequestIn, findings: _Findings) -> None:
                 )
 
 
+def _check_resistor_stock(
+    label: str,
+    stock: Sequence[ResistorStockIn],
+    findings: _Findings,
+    *,
+    field_base: str,
+) -> None:
+    """Shared between a test request's inventory and an admin generator profile."""
+    if not stock:
+        findings.error(
+            f"{label.upper()}_INVENTORY_EMPTY",
+            f"No {label} resistors are available, so no candidate configuration can "
+            f"be built.",
+            field_=field_base,
+        )
+    for index, item in enumerate(stock):
+        if not math.isfinite(item.ohms) or item.ohms <= 0:
+            findings.error(
+                "RESISTOR_VALUE_INVALID",
+                f"{label.title()} resistor #{index + 1} has a non-positive value "
+                f"({item.ohms:g} ohm).",
+                field_=f"{field_base}[{index}].ohms",
+            )
+        if item.units_per_stage < 1:
+            findings.error(
+                "RESISTOR_UNITS_INVALID",
+                f"{label.title()} resistor {item.ohms:g} ohm has "
+                f"{item.units_per_stage} units per stage. At least 1 is needed for "
+                f"the value to be usable.",
+                field_=f"{field_base}[{index}].units_per_stage",
+            )
+
+    duplicates = _duplicate_values([item.ohms for item in stock])
+    if duplicates:
+        findings.warn(
+            "RESISTOR_VALUE_DUPLICATED",
+            f"{label.title()} resistor value(s) "
+            f"{', '.join(f'{value:g}' for value in duplicates)} ohm appear more than "
+            f"once. Combine them into a single entry with the total units per stage, "
+            f"otherwise the candidate generator will treat them as separate options.",
+            field_=field_base,
+        )
+
+
+def _check_external_resistors(
+    name: str, values: Sequence[float], findings: _Findings, *, field_base: str
+) -> None:
+    for index, value in enumerate(values):
+        if not math.isfinite(value) or value <= 0:
+            findings.error(
+                "EXTERNAL_RESISTOR_INVALID",
+                f"External resistor #{index + 1} in {name} has a non-positive "
+                f"value ({value:g} ohm).",
+                field_=f"{field_base}[{index}]",
+            )
+
+
+def _duplicate_values(values: Sequence[float]) -> list[float]:
+    seen: set[float] = set()
+    duplicates: list[float] = []
+    for value in values:
+        if value in seen and value not in duplicates:
+            duplicates.append(value)
+        seen.add(value)
+    return duplicates
+
+
 def _check_inventory(request: TestRequestIn, findings: _Findings) -> None:
     inventory = request.inventory
 
-    for label, stock in (("front", inventory.front), ("tail", inventory.tail)):
-        if not stock:
-            findings.error(
-                f"{label.upper()}_INVENTORY_EMPTY",
-                f"No {label} resistors are available, so no candidate configuration can "
-                f"be built.",
-                field_=f"inventory.{label}",
-            )
-        for index, item in enumerate(stock):
-            if not math.isfinite(item.ohms) or item.ohms <= 0:
-                findings.error(
-                    "RESISTOR_VALUE_INVALID",
-                    f"{label.title()} resistor #{index + 1} has a non-positive value "
-                    f"({item.ohms:g} ohm).",
-                    field_=f"inventory.{label}[{index}].ohms",
-                )
-            if item.units_per_stage < 1:
-                findings.error(
-                    "RESISTOR_UNITS_INVALID",
-                    f"{label.title()} resistor {item.ohms:g} ohm has "
-                    f"{item.units_per_stage} units per stage. At least 1 is needed for "
-                    f"the value to be usable.",
-                    field_=f"inventory.{label}[{index}].units_per_stage",
-                )
-
-    for label, values in (
-        ("external_front_ohms", inventory.external_front_ohms),
-        ("external_tail_ohms", inventory.external_tail_ohms),
-    ):
-        for index, value in enumerate(values):
-            if not math.isfinite(value) or value <= 0:
-                findings.error(
-                    "EXTERNAL_RESISTOR_INVALID",
-                    f"External resistor #{index + 1} in {label} has a non-positive "
-                    f"value ({value:g} ohm).",
-                    field_=f"inventory.{label}[{index}]",
-                )
+    _check_resistor_stock("front", inventory.front, findings, field_base="inventory.front")
+    _check_resistor_stock("tail", inventory.tail, findings, field_base="inventory.tail")
+    _check_external_resistors(
+        "external_front_ohms",
+        inventory.external_front_ohms,
+        findings,
+        field_base="inventory.external_front_ohms",
+    )
+    _check_external_resistors(
+        "external_tail_ohms",
+        inventory.external_tail_ohms,
+        findings,
+        field_base="inventory.external_tail_ohms",
+    )
 
     if request.impulse_type == config.SWITCHING:
         _check_switching_resistance_reach(request, findings)
@@ -589,6 +637,221 @@ def _normalise(request: TestRequestIn) -> NormalizedRequestOut:
             ),
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Admin generator profile
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ProfileCheck:
+    """Outcome of validating a laboratory generator profile."""
+
+    errors: list[IssueOut] = field(default_factory=list)
+    warnings: list[IssueOut] = field(default_factory=list)
+    notices: list[IssueOut] = field(default_factory=list)
+    reach: ProfileReachOut | None = None
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
+def validate_profile(profile: GeneratorProfile) -> ProfileCheck:
+    """Check a generator profile submitted from the admin interface.
+
+    Structural only: it says nothing about any particular test, because a profile is
+    saved before anyone knows what will be tested on it. The hard ratings in
+    ``config.GENERATOR`` act as a ceiling, since those come from the supplied material
+    and describe physical equipment the admin cannot reconfigure by typing.
+    """
+    findings = _Findings()
+    rating = config.GENERATOR
+
+    if profile.max_stages < 1:
+        findings.error(
+            "MAX_STAGES_INVALID",
+            f"Stages available must be at least 1, received {profile.max_stages}.",
+            field_="profile.max_stages",
+        )
+    elif profile.max_stages > rating.max_stages:
+        findings.error(
+            "MAX_STAGES_ABOVE_RATING",
+            f"The generator physically has {rating.max_stages} stages; "
+            f"{profile.max_stages} were entered.",
+            field_="profile.max_stages",
+            suggestion=f"Enter {rating.max_stages} or fewer.",
+        )
+
+    if profile.min_active_stages < 1:
+        findings.error(
+            "MIN_STAGES_INVALID",
+            f"Minimum active stages must be at least 1, received "
+            f"{profile.min_active_stages}.",
+            field_="profile.min_active_stages",
+        )
+    elif profile.min_active_stages > profile.max_stages:
+        findings.error(
+            "STAGE_RANGE_INVERTED",
+            f"Minimum active stages ({profile.min_active_stages}) exceeds stages "
+            f"available ({profile.max_stages}).",
+            field_="profile.min_active_stages",
+        )
+    elif profile.min_active_stages < rating.min_active_stages:
+        findings.warn(
+            "BELOW_STATED_MINIMUM_STAGES",
+            f"The problem statement specifies a minimum of "
+            f"{rating.min_active_stages} active stages; {profile.min_active_stages} "
+            f"was entered.",
+            field_="profile.min_active_stages",
+        )
+
+    if profile.max_stage_voltage_kv <= 0:
+        findings.error(
+            "STAGE_VOLTAGE_INVALID",
+            f"Stage voltage must be greater than zero, received "
+            f"{profile.max_stage_voltage_kv:g} kV.",
+            field_="profile.max_stage_voltage_kv",
+        )
+    elif profile.max_stage_voltage_kv > rating.max_stage_voltage_kv:
+        findings.error(
+            "STAGE_VOLTAGE_ABOVE_RATING",
+            f"Stage voltage {profile.max_stage_voltage_kv:g} kV exceeds the rated "
+            f"{rating.max_stage_voltage_kv:g} kV per stage. Charging a stage above its "
+            f"rating is a damage and safety risk, not a configuration choice.",
+            field_="profile.max_stage_voltage_kv",
+        )
+
+    if profile.stage_capacitance_uf <= 0:
+        findings.error(
+            "STAGE_CAPACITANCE_INVALID",
+            f"Stage capacitance must be greater than zero, received "
+            f"{profile.stage_capacitance_uf:g} uF.",
+            field_="profile.stage_capacitance_uf",
+        )
+
+    if profile.capacitors_per_stage < 1:
+        findings.error(
+            "CAPACITORS_PER_STAGE_INVALID",
+            f"Capacitors per stage must be at least 1, received "
+            f"{profile.capacitors_per_stage}.",
+            field_="profile.capacitors_per_stage",
+        )
+
+    if not 0 < profile.default_efficiency <= 1:
+        findings.error(
+            "EFFICIENCY_OUT_OF_BOUNDS",
+            f"Default efficiency must be a fraction greater than 0 and at most 1, "
+            f"received {profile.default_efficiency:g}.",
+            field_="profile.default_efficiency",
+            suggestion="Enter 0.82 for 82%, not 82.",
+        )
+
+    if profile.default_stray_inductance_uh < 0:
+        findings.error(
+            "CIRCUIT_VALUE_NEGATIVE",
+            f"Default stray inductance cannot be negative, received "
+            f"{profile.default_stray_inductance_uh:g} uH.",
+            field_="profile.default_stray_inductance_uh",
+        )
+
+    _check_resistor_stock(
+        "front", profile.front_resistors, findings, field_base="profile.front_resistors"
+    )
+    _check_resistor_stock(
+        "tail", profile.tail_resistors, findings, field_base="profile.tail_resistors"
+    )
+    _check_external_resistors(
+        "external front resistors",
+        profile.external_front_ohms,
+        findings,
+        field_base="profile.external_front_ohms",
+    )
+    _check_external_resistors(
+        "external tail resistors",
+        profile.external_tail_ohms,
+        findings,
+        field_base="profile.external_tail_ohms",
+    )
+
+    reach = _profile_reach(profile) if not findings.errors else None
+    if reach is not None:
+        _check_profile_coverage(profile, reach, findings)
+
+    return ProfileCheck(
+        errors=findings.errors,
+        warnings=findings.warnings,
+        notices=findings.notices,
+        reach=reach,
+    )
+
+
+def _profile_reach(profile: GeneratorProfile) -> ProfileReachOut:
+    front_reach = max(
+        (item.ohms * item.units_per_stage for item in profile.front_resistors), default=0.0
+    )
+    tail_reach = max(
+        (item.ohms * item.units_per_stage for item in profile.tail_resistors), default=0.0
+    )
+    charge_ceiling = profile.max_stages * profile.max_stage_voltage_kv
+    return ProfileReachOut(
+        max_front_ohms_per_stage=front_reach,
+        max_tail_ohms_per_stage=tail_reach,
+        max_charge_voltage_kv=charge_ceiling,
+        max_achievable_peak_kv=charge_ceiling * profile.default_efficiency,
+        front_values=len(profile.front_resistors),
+        tail_values=len(profile.tail_resistors),
+        has_external_front=bool(profile.external_front_ohms),
+        has_external_tail=bool(profile.external_tail_ohms),
+    )
+
+
+def _check_profile_coverage(
+    profile: GeneratorProfile, reach: ProfileReachOut, findings: _Findings
+) -> None:
+    """Report what this profile will and will not be able to do."""
+    rating = config.GENERATOR
+
+    if reach.max_achievable_peak_kv < rating.max_test_voltage_kv:
+        findings.notice(
+            "PROFILE_BELOW_STATED_RANGE",
+            f"This setup reaches {reach.max_achievable_peak_kv:.0f} kV, below the "
+            f"{rating.max_test_voltage_kv:g} kV top of the range stated in the problem "
+            f"statement. Test requests above "
+            f"{reach.max_achievable_peak_kv:.0f} kV will be rejected.",
+            field_="profile.max_stages",
+        )
+
+    try:
+        needed = config.domain_for(config.SWITCHING)["inputs"]
+    except (FileNotFoundError, KeyError):
+        return
+
+    front_short = (
+        reach.max_front_ohms_per_stage < needed["Front_R_Stage"]["min"]
+        and not profile.external_front_ohms
+    )
+    tail_short = (
+        reach.max_tail_ohms_per_stage < needed["Tail_R_Stage"]["min"]
+        and not profile.external_tail_ohms
+    )
+    if front_short or tail_short:
+        findings.warn(
+            "PROFILE_CANNOT_DO_SWITCHING",
+            f"This setup cannot produce a 250/2500 us switching impulse. In series it "
+            f"reaches {reach.max_front_ohms_per_stage:g} ohm/stage front and "
+            f"{reach.max_tail_ohms_per_stage:g} ohm/stage tail, whereas switching needs "
+            f"roughly {needed['Front_R_Stage']['min']:.0f} ohm/stage front and "
+            f"{needed['Tail_R_Stage']['min']:.0f} ohm/stage tail. Operators will be "
+            f"able to request switching impulses but will see a warning on every one.",
+            field_="profile.external_front_ohms",
+            suggestion=(
+                "Add the external front and tail resistor values the laboratory "
+                "actually has. No values were supplied with the project material, so "
+                "they cannot be assumed."
+            ),
+        )
 
 
 def _relevant_assumptions(request: TestRequestIn) -> list[dict]:

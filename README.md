@@ -14,9 +14,10 @@ qualified engineer under the laboratory's approved test procedure.
 | Module | State |
 | --- | --- |
 | Input schema, validation, normalisation | implemented |
+| Admin generator setup, persisted | implemented |
+| Operator test-request interface | implemented |
 | Assumption and provenance register | implemented |
 | ML training-domain warnings | implemented |
-| Frontend input dashboard | implemented |
 | Physics engine (`backend/physics.py`) | not started |
 | Residual ML model (`backend/ml_model.py`) | not started |
 | Candidate optimiser (`backend/optimizer.py`) | not started |
@@ -27,6 +28,37 @@ qualified engineer under the laboratory's approved test procedure.
 `POST /api/optimise` exists and deliberately returns HTTP 501 so the frontend can
 integrate against the real endpoint without anyone mistaking a placeholder for a
 recommendation.
+
+## Two interfaces
+
+The dashboard has two views, switched from the header. The split follows the
+distinction the problem statement itself draws between fixed generator
+parameters/constraints and variable test-circuit parameters.
+
+**Generator setup** is for whoever maintains the equipment. It records the ratings
+(stages, stage voltage, stage capacitance), the resistor store with how many units of
+each value can go in series on one stage, any external resistors, and the laboratory's
+default efficiency and stray inductance. It is entered once and saved to
+`backend/data/generator_profile.json`. The panel beside the form shows what the setup
+can reach: highest achievable peak voltage and the front and tail resistance ceilings.
+A profile with blocking errors is refused rather than stored, so an operator can never
+inherit a setup that exceeds the equipment's physical ratings.
+
+**Test request** is for the engineer running a shot. It asks only what is being tested
+and what result is needed: test object, impulse type, polarity, required peak voltage
+and the three test-circuit capacitances. It carries no generator fields at all —
+`OperatorRequestIn` has no way to express them — so the operator cannot accidentally
+describe hardware the laboratory does not have. Stray inductance and efficiency are
+inherited from the admin defaults, with a per-test override available behind a
+checkbox.
+
+The consequence is that the admin decides what is possible. Reduce the generator to 10
+stages and a 2000 kV request is refused with "the generator tops out at 1640 kV",
+where on the full 15-stage setup the same request is accepted.
+
+There is **no authentication**. This is a workflow split so that equipment
+configuration is entered once by the right person; it is not access control, and the
+admin view says so on screen.
 
 ## Running it
 
@@ -67,9 +99,10 @@ backend/
   units.py        The only place units are converted
   schemas.py      Request/response contracts shared by all five workstreams
   validation.py   Input checking, normalisation, out-of-domain warnings
+  store.py        Persistence for the saved generator setup
   main.py         FastAPI app
   data/           ml_domain.json, generated from the training split
-frontend/src/     React dashboard: input form and validation results
+frontend/src/     React dashboard: admin and operator views, validation results
 data/
   reference/      The supplied problem statement and workbook, unmodified
   synthetic_dataset.csv   The workbook's dataset, exported for the ML workstream

@@ -14,9 +14,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-from backend import config
-from backend.schemas import IssueOut, TestRequestIn, ValidationResponse
-from backend.validation import validate_request
+from backend import config, store
+from backend.schemas import (
+    IssueOut,
+    OperatorRequestIn,
+    ProfileResponse,
+    ProfileUpdateIn,
+    TestRequestIn,
+    ValidationResponse,
+    merge_operator_request,
+)
+from backend.validation import validate_profile, validate_request
 
 app = FastAPI(
     title="Impulse Generator Setting Optimiser",
@@ -77,6 +85,17 @@ async def _schema_errors_as_validation_response(
 # ---------------------------------------------------------------------------
 
 
+@app.get("/")
+def root() -> dict:
+    """Signpost, because the dashboard is served by Vite on a different port."""
+    return {
+        "service": app.title,
+        "dashboard": "http://localhost:5173",
+        "api_docs": "/docs",
+        "note": "This port serves the API only. The user interface is on port 5173.",
+    }
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok", "version": app.version}
@@ -132,6 +151,8 @@ def metadata() -> dict:
         ],
         "capabilities": {
             "validation": "implemented",
+            "admin_generator_setup": "implemented",
+            "operator_test_request": "implemented",
             "physics_engine": "not_implemented",
             "ml_residual_model": "not_implemented",
             "candidate_optimiser": "not_implemented",
@@ -142,9 +163,84 @@ def metadata() -> dict:
     }
 
 
+def _profile_response(stored) -> ProfileResponse:
+    check = validate_profile(stored.profile)
+    return ProfileResponse(
+        stored=stored,
+        ok=check.ok,
+        errors=check.errors,
+        warnings=check.warnings,
+        notices=check.notices,
+        reach=check.reach,
+    )
+
+
+@app.get("/api/admin/profile", response_model=ProfileResponse)
+def read_profile() -> ProfileResponse:
+    """The laboratory's saved generator setup, with its validation status."""
+    return _profile_response(store.load_profile())
+
+
+@app.put("/api/admin/profile", response_model=ProfileResponse)
+def write_profile(update: ProfileUpdateIn) -> ProfileResponse:
+    """Save a generator setup.
+
+    Refuses to persist a profile with blocking errors, so an operator can never
+    inherit a setup that exceeds the equipment's physical ratings.
+    """
+    check = validate_profile(update.profile)
+    if not check.ok:
+        return ProfileResponse(
+            stored=store.load_profile(),
+            ok=False,
+            errors=check.errors,
+            warnings=check.warnings,
+            notices=check.notices,
+            reach=check.reach,
+        )
+    return _profile_response(store.save_profile(update.profile, update.updated_by))
+
+
+@app.post("/api/admin/profile/reset", response_model=ProfileResponse)
+def reset_profile() -> ProfileResponse:
+    """Discard the saved setup and return to the supplied-material values."""
+    return _profile_response(store.reset_profile())
+
+
+@app.post("/api/test-request/validate", response_model=ValidationResponse)
+def validate_test_request(request: OperatorRequestIn) -> ValidationResponse:
+    """Check a test request from the operator interface.
+
+    Generator ratings and resistor inventory are taken from the stored admin profile
+    rather than from the request, so the operator cannot accidentally describe hardware
+    the laboratory does not have.
+    """
+    stored = store.load_profile()
+    resolved = merge_operator_request(request, stored.profile)
+    report = validate_request(resolved)
+    if stored.is_factory_default:
+        report.notices.append(
+            IssueOut(
+                severity="notice",
+                code="PROFILE_NOT_CONFIGURED",
+                message=(
+                    "No generator setup has been saved yet, so the values taken from "
+                    "the supplied problem statement and workbook are in use. Confirm "
+                    "them in the generator setup interface against the actual equipment."
+                ),
+            )
+        )
+    return report
+
+
 @app.post("/api/validate", response_model=ValidationResponse)
 def validate(request: TestRequestIn) -> ValidationResponse:
-    """Check and normalise a test request without running the optimisation."""
+    """Check and normalise a fully specified test request.
+
+    Takes generator ratings and inventory inline instead of from the stored profile.
+    Useful for tests and scripted runs; the operator interface uses
+    ``/api/test-request/validate``.
+    """
     return validate_request(request)
 
 

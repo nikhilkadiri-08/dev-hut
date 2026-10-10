@@ -6,4 +6,8 @@ __pycache__/
 node_modules/
 frontend/dist/
 *.tsbuildinfo
+
+# Machine-local laboratory setup saved from the admin interface. The supplied-material
+# defaults in backend/config.py are the committed source of truth.
+backend/data/generator_profile.json
 *.egg-info/

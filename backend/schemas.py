@@ -107,8 +107,87 @@ class InventoryIn(BaseModel):
     external_tail_ohms: list[float] = Field(default_factory=list)
 
 
+class GeneratorProfile(BaseModel):
+    """The laboratory's standing generator setup, owned by the admin interface.
+
+    These are properties of the equipment and the resistor store, not of any one test.
+    They are entered once by whoever maintains the generator, persisted, and then
+    reused by every test request so the operator never retypes them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_stages: int = config.GENERATOR.max_stages
+    min_active_stages: int = config.GENERATOR.min_active_stages
+    max_stage_voltage_kv: float = config.GENERATOR.max_stage_voltage_kv
+    stage_capacitance_uf: float = config.GENERATOR.stage_capacitance_uf
+    capacitors_per_stage: int = config.GENERATOR.capacitors_per_stage
+    front_resistors: list[ResistorStockIn] = Field(
+        default_factory=lambda: [
+            ResistorStockIn(ohms=item.ohms, units_per_stage=item.units_per_stage)
+            for item in config.FRONT_RESISTORS
+        ]
+    )
+    tail_resistors: list[ResistorStockIn] = Field(
+        default_factory=lambda: [
+            ResistorStockIn(ohms=item.ohms, units_per_stage=item.units_per_stage)
+            for item in config.TAIL_RESISTORS
+        ]
+    )
+    external_front_ohms: list[float] = Field(default_factory=list)
+    external_tail_ohms: list[float] = Field(default_factory=list)
+    default_stray_inductance_uh: float = config.DEFAULT_STRAY_INDUCTANCE_UH
+    default_efficiency: float = config.DEFAULT_EFFICIENCY
+
+
+class StoredProfile(BaseModel):
+    """A generator profile plus the provenance of the saved record itself."""
+
+    profile: GeneratorProfile
+    updated_at: Optional[str] = None
+    updated_by: Optional[str] = None
+    is_factory_default: bool = True
+    """True while no admin has saved anything and the supplied-material values apply."""
+
+
+class ProfileUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile: GeneratorProfile
+    updated_by: str = Field(
+        default="", description="Who made the change. Recorded for traceability only."
+    )
+
+
+class OperatorRequestIn(BaseModel):
+    """What the test engineer specifies for one shot.
+
+    Deliberately omits every generator and inventory field: those come from the stored
+    admin profile. ``stray_inductance_uh`` and ``expected_efficiency`` are optional
+    overrides that fall back to the laboratory defaults the admin set.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    test_object_type_id: str = "workbook_example"
+    test_object_label: Optional[str] = None
+    standard_id: str = config.STANDARD_ID
+    impulse_type: ImpulseType = "lightning"
+    polarity: Polarity = "positive"
+    required_peak_kv: float = config.DEFAULT_TEST_VOLTAGE_KV
+    load_capacitance_pf: float
+    divider_capacitance_pf: float = config.DEFAULT_DIVIDER_CAPACITANCE_PF
+    stray_capacitance_pf: float = config.DEFAULT_STRAY_CAPACITANCE_PF
+    stray_inductance_uh: Optional[float] = None
+    expected_efficiency: Optional[float] = None
+
+
 class TestRequestIn(BaseModel):
-    """Everything the engineer specifies for one optimisation run."""
+    """Everything the engineer specifies for one optimisation run.
+
+    The fully resolved form, after an operator request has been merged with the stored
+    generator profile. Downstream modules work with this.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -212,3 +291,74 @@ class ValidationResponse(BaseModel):
     normalized: Optional[NormalizedRequestOut] = None
     domain_checks: list[DomainCheckOut] = Field(default_factory=list)
     relevant_assumptions: list[dict] = Field(default_factory=list)
+
+
+class ProfileReachOut(BaseModel):
+    """What the saved generator setup can physically do.
+
+    Shown in the admin interface so the effect of a change is immediately visible,
+    and summarised read-only in the operator interface.
+    """
+
+    max_front_ohms_per_stage: float
+    max_tail_ohms_per_stage: float
+    max_charge_voltage_kv: float
+    max_achievable_peak_kv: float
+    front_values: int
+    tail_values: int
+    has_external_front: bool
+    has_external_tail: bool
+
+
+class ProfileResponse(BaseModel):
+    stored: StoredProfile
+    ok: bool
+    errors: list[IssueOut] = Field(default_factory=list)
+    warnings: list[IssueOut] = Field(default_factory=list)
+    notices: list[IssueOut] = Field(default_factory=list)
+    reach: Optional[ProfileReachOut] = None
+
+
+def merge_operator_request(
+    operator: OperatorRequestIn, profile: GeneratorProfile
+) -> TestRequestIn:
+    """Combine a test request with the laboratory's stored generator setup.
+
+    The two optional operator fields fall back to the admin's laboratory defaults, so
+    an operator who leaves them alone inherits whatever the admin configured.
+    """
+    return TestRequestIn(
+        test_object_type_id=operator.test_object_type_id,
+        test_object_label=operator.test_object_label,
+        standard_id=operator.standard_id,
+        impulse_type=operator.impulse_type,
+        polarity=operator.polarity,
+        required_peak_kv=operator.required_peak_kv,
+        circuit=TestCircuitIn(
+            load_capacitance_pf=operator.load_capacitance_pf,
+            divider_capacitance_pf=operator.divider_capacitance_pf,
+            stray_capacitance_pf=operator.stray_capacitance_pf,
+            stray_inductance_uh=(
+                operator.stray_inductance_uh
+                if operator.stray_inductance_uh is not None
+                else profile.default_stray_inductance_uh
+            ),
+            expected_efficiency=(
+                operator.expected_efficiency
+                if operator.expected_efficiency is not None
+                else profile.default_efficiency
+            ),
+        ),
+        generator=GeneratorConfigIn(
+            max_stages=profile.max_stages,
+            min_active_stages=profile.min_active_stages,
+            max_stage_voltage_kv=profile.max_stage_voltage_kv,
+            stage_capacitance_uf=profile.stage_capacitance_uf,
+        ),
+        inventory=InventoryIn(
+            front=list(profile.front_resistors),
+            tail=list(profile.tail_resistors),
+            external_front_ohms=list(profile.external_front_ohms),
+            external_tail_ohms=list(profile.external_tail_ohms),
+        ),
+    )

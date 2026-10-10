@@ -97,6 +97,48 @@ export interface ResistorStock {
   units_per_stage: number;
 }
 
+/** The laboratory's standing generator setup, owned by the admin interface. */
+export interface GeneratorProfile {
+  max_stages: number;
+  min_active_stages: number;
+  max_stage_voltage_kv: number;
+  stage_capacitance_uf: number;
+  capacitors_per_stage: number;
+  front_resistors: ResistorStock[];
+  tail_resistors: ResistorStock[];
+  external_front_ohms: number[];
+  external_tail_ohms: number[];
+  default_stray_inductance_uh: number;
+  default_efficiency: number;
+}
+
+export interface StoredProfile {
+  profile: GeneratorProfile;
+  updated_at: string | null;
+  updated_by: string | null;
+  is_factory_default: boolean;
+}
+
+export interface ProfileReach {
+  max_front_ohms_per_stage: number;
+  max_tail_ohms_per_stage: number;
+  max_charge_voltage_kv: number;
+  max_achievable_peak_kv: number;
+  front_values: number;
+  tail_values: number;
+  has_external_front: boolean;
+  has_external_tail: boolean;
+}
+
+export interface ProfileResponse {
+  stored: StoredProfile;
+  ok: boolean;
+  errors: Issue[];
+  warnings: Issue[];
+  notices: Issue[];
+  reach: ProfileReach | null;
+}
+
 export interface TestObjectType {
   id: string;
   label: string;

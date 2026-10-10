@@ -70,16 +70,56 @@ code,
   max-width: 68ch;
 }
 
+/* Role switch ------------------------------------------------------------- */
+
+.roles {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.role {
+  padding: 7px 14px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.role:hover {
+  color: var(--text);
+}
+
+.role--active {
+  background: var(--accent);
+  color: #07121d;
+}
+
+.role__blurb {
+  margin: -12px 0 20px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
 /* Layout ------------------------------------------------------------------ */
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(360px, 440px) minmax(0, 1fr);
-  gap: 24px;
+  grid-template-columns: minmax(300px, 400px) minmax(0, 1fr);
+  gap: 20px;
   align-items: start;
 }
 
-@media (max-width: 1080px) {
+/* Only stack once the results column would be narrower than the input column. */
+@media (max-width: 760px) {
   .layout {
     grid-template-columns: 1fr;
   }
@@ -122,7 +162,7 @@ code,
 
 .grid-2 {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
   gap: 14px;
 }
 
@@ -172,6 +212,24 @@ code,
   color: var(--text);
   font: inherit;
   font-variant-numeric: tabular-nums;
+}
+
+.input--compact {
+  padding: 5px 7px;
+  font-size: 13px;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.checkbox input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
 }
 
 .input:focus-visible {
@@ -273,6 +331,74 @@ code,
   font-size: 12px;
 }
 
+/* Resistor store editor (admin) ------------------------------------------- */
+
+.stock {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 0;
+}
+
+.stock__legend {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 6px;
+  font-weight: 500;
+}
+
+.stock__reach {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.stock__table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 8px;
+}
+
+.stock__table th {
+  padding: 0 6px 4px;
+  text-align: left;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stock__table td {
+  padding: 2px 6px;
+}
+
+.stock__table td:last-child {
+  width: 28px;
+}
+
+.row--error .input {
+  border-color: var(--error);
+}
+
+.icon-button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  border-color: var(--error);
+  color: var(--error);
+}
+
 /* Actions ----------------------------------------------------------------- */
 
 .actions {
@@ -296,6 +422,21 @@ code,
   border-color: var(--accent);
   background: var(--accent);
   color: #07121d;
+}
+
+.button--ghost {
+  align-self: flex-start;
+  padding: 6px 11px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.actions--row {
+  flex-direction: row;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .button:disabled {
@@ -324,6 +465,23 @@ code,
 
 .card--pending {
   border-color: var(--warn);
+}
+
+.card--caution {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+}
+
+.card--quiet {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface-raised);
+}
+
+.card__body {
+  margin: 0;
+  font-size: 13px;
 }
 
 .card__title {

@@ -5,10 +5,17 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import config
+from backend import config, store
 from backend.main import app
 
 client = TestClient(app)
+
+
+@pytest.fixture
+def isolated_profile(tmp_path, monkeypatch):
+    """Keep admin saves out of backend/data while tests run."""
+    monkeypatch.setattr(store, "PROFILE_PATH", tmp_path / "generator_profile.json")
+    yield
 
 WORKBOOK_PAYLOAD = {
     "test_object_type_id": "workbook_example",
@@ -132,3 +139,123 @@ def test_both_impulse_types_validate_end_to_end(impulse_type, voltage):
     assert body["ok"] is True
     spec = config.IMPULSE_SPECS[impulse_type]
     assert body["normalized"]["target_front_time_us"] == spec.front_time.nominal
+
+
+# ---------------------------------------------------------------------------
+# Admin interface
+# ---------------------------------------------------------------------------
+
+OPERATOR_PAYLOAD = {
+    "test_object_type_id": "workbook_example",
+    "impulse_type": "lightning",
+    "required_peak_kv": 1425.0,
+    "load_capacitance_pf": 850.0,
+    "divider_capacitance_pf": 500.0,
+    "stray_capacitance_pf": 150.0,
+}
+
+
+def admin_defaults() -> dict:
+    return client.get("/api/admin/profile").json()["stored"]["profile"]
+
+
+def test_profile_starts_at_the_supplied_material_values(isolated_profile):
+    body = client.get("/api/admin/profile").json()
+    assert body["ok"] is True
+    assert body["stored"]["is_factory_default"] is True
+    assert body["stored"]["updated_at"] is None
+    assert body["stored"]["profile"]["max_stages"] == 15
+    assert body["reach"]["max_achievable_peak_kv"] == pytest.approx(2460.0)
+
+
+def test_saving_a_profile_persists_it(isolated_profile):
+    profile = {**admin_defaults(), "max_stages": 12}
+    response = client.put(
+        "/api/admin/profile", json={"profile": profile, "updated_by": "hv lab"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["stored"]["is_factory_default"] is False
+    assert body["stored"]["updated_by"] == "hv lab"
+
+    # A fresh read sees the saved value.
+    assert client.get("/api/admin/profile").json()["stored"]["profile"]["max_stages"] == 12
+
+
+def test_an_invalid_profile_is_not_persisted(isolated_profile):
+    profile = {**admin_defaults(), "max_stage_voltage_kv": 250.0}
+    body = client.put("/api/admin/profile", json={"profile": profile}).json()
+
+    assert body["ok"] is False
+    assert any(e["code"] == "STAGE_VOLTAGE_ABOVE_RATING" for e in body["errors"])
+    # The stored profile is untouched.
+    assert client.get("/api/admin/profile").json()["stored"]["is_factory_default"] is True
+
+
+def test_reset_returns_to_the_supplied_material_values(isolated_profile):
+    client.put("/api/admin/profile", json={"profile": {**admin_defaults(), "max_stages": 9}})
+    assert client.get("/api/admin/profile").json()["stored"]["profile"]["max_stages"] == 9
+
+    body = client.post("/api/admin/profile/reset").json()
+    assert body["stored"]["is_factory_default"] is True
+    assert body["stored"]["profile"]["max_stages"] == 15
+
+
+# ---------------------------------------------------------------------------
+# Operator interface
+# ---------------------------------------------------------------------------
+
+
+def test_operator_request_uses_the_stored_profile(isolated_profile):
+    body = client.post("/api/test-request/validate", json=OPERATOR_PAYLOAD).json()
+    assert body["ok"] is True
+    assert body["normalized"]["derived"]["stages_required"] == 9
+
+
+def test_operator_is_told_when_no_setup_has_been_saved(isolated_profile):
+    body = client.post("/api/test-request/validate", json=OPERATOR_PAYLOAD).json()
+    assert any(n["code"] == "PROFILE_NOT_CONFIGURED" for n in body["notices"])
+
+
+def test_the_notice_disappears_once_a_setup_is_saved(isolated_profile):
+    client.put("/api/admin/profile", json={"profile": admin_defaults(), "updated_by": "lab"})
+    body = client.post("/api/test-request/validate", json=OPERATOR_PAYLOAD).json()
+    assert not any(n["code"] == "PROFILE_NOT_CONFIGURED" for n in body["notices"])
+
+
+def test_an_admin_change_constrains_the_operator(isolated_profile):
+    """The headline behaviour of the split: the admin sets what is possible."""
+    request = {**OPERATOR_PAYLOAD, "required_peak_kv": 2000.0}
+    assert client.post("/api/test-request/validate", json=request).json()["ok"] is True
+
+    client.put("/api/admin/profile", json={"profile": {**admin_defaults(), "max_stages": 10}})
+
+    body = client.post("/api/test-request/validate", json=request).json()
+    assert body["ok"] is False
+    assert any(e["code"] == "EXCEEDS_GENERATOR_CEILING" for e in body["errors"])
+
+
+def test_admin_efficiency_default_reaches_the_operator(isolated_profile):
+    client.put(
+        "/api/admin/profile", json={"profile": {**admin_defaults(), "default_efficiency": 0.7}}
+    )
+    body = client.post("/api/test-request/validate", json=OPERATOR_PAYLOAD).json()
+    # 1425 / (200 * 0.7) = 10.2 -> 11 stages, against 9 at 82% efficiency.
+    assert body["normalized"]["derived"]["stages_required"] == 11
+
+
+def test_operator_cannot_submit_generator_fields(isolated_profile):
+    payload = {**OPERATOR_PAYLOAD, "max_stages": 15}
+    response = client.post("/api/test-request/validate", json=payload)
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["code"] == "SCHEMA_EXTRA_FORBIDDEN"
+
+
+def test_operator_load_capacitance_is_required(isolated_profile):
+    payload = {k: v for k, v in OPERATOR_PAYLOAD.items() if k != "load_capacitance_pf"}
+    response = client.post("/api/test-request/validate", json=payload)
+    assert response.status_code == 422
+    body = response.json()
+    assert body["errors"][0]["message"] == "This value is required."
+    assert body["errors"][0]["field"] == "load_capacitance_pf"
