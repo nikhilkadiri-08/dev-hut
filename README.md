@@ -24,6 +24,8 @@ qualified engineer under the laboratory's approved test procedure.
 | Waveform reconstruction | implemented, preliminary and labelled as such |
 | ML handoff contract (`physics_model/ml_interface.py`) | implemented, no model trained |
 | Residual ML model | not started (optional; kNN is spreadsheet documentation only) |
+| Configurable test sequences | implemented, user-configured; IEC clauses unresolved |
+| Chopped lightning reconstruction | preliminary assumed collapse, not a circuit chop |
 | Wiring the physics model into `POST /api/optimise` | implemented, physics-only until a residual artifact is injected |
 | Measured waveform import | not started |
 | Open-literature reference catalogue | implemented |
@@ -227,6 +229,38 @@ Do not use the workbook kNN. Implement an object with
 `predict_residuals(handoff) -> ResidualCorrection` and call
 `backend.ml_runtime.set_residual_model(instance)` when the process starts.
 If nothing is set, optimise stays `physics_only` with `ml_model_used: false`.
+
+### Supported waveforms
+
+| Kind | Timing used by the extractor | Workbook scalar | Status |
+| --- | --- | --- | --- |
+| Lightning full wave | T1 = 1.67×(t90−t30), T2 from virtual origin | E18 / E19 | reconstruction of workbook scalars |
+| Switching | time-to-peak Tp | E18 still uses 1.67 | conflict documented, E18 not replaced |
+| Chopped lightning | pre-chop lightning reconstruction + assumed collapse | E18 / E19 for the pre-chop | preliminary; collapse is configured, not measured |
+
+A 50% *voltage level* is a fraction of the reference test voltage. It is not the
+50% tail crossing that defines T2.
+
+Sequence example (user-configured; citation unresolved):
+
+```json
+{
+  "reference_peak_kv": 1425,
+  "shots": [
+    {"waveform_kind": "lightning_full", "level_fraction": 0.5},
+    {"waveform_kind": "lightning_full", "level_fraction": 1.0}
+  ]
+}
+```
+
+`data/synthetic_dataset.csv` has `Physics_Crest_kV == Test_kV` on every row (E20
+echo). That is not a crest model. Measured columns are absent.
+
+Demo-safe: physics-only predict/optimise, requested vs loaded crest, unverified
+safety labels, a configured 50%/100% sequence. Needs CPRI/datasheet data: real
+crest, chopped-gap circuit, IEC edition/clauses, capacitor ratings, 3 µF vs 2.5 kJ.
+
+See `physics_model/REQUIREMENTS.md` for the audit table.
 
 ### Physics tests
 

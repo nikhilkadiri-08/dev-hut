@@ -129,9 +129,25 @@ from physics_model.optimiser import (
     OptimisationResult,
     RankingWeights,
     ResistorBuild,
+    SequenceOptimisation,
+    ShotOptimisation,
     bracketing_values,
     buildable_resistances,
     optimise,
+    optimise_sequence,
+)
+from physics_model.test_sequence import (
+    CitationStatus,
+    ConstraintStatus,
+    ShotEvaluation,
+    ShotSpec,
+    StandardCitation,
+    SequenceEvaluation,
+    TestSequence,
+    WaveformKind,
+    evaluate_sequence,
+    evaluate_shot,
+    impulse_type_for,
 )
 from physics_model.validation import (
     QualityObjective,
@@ -143,8 +159,10 @@ from physics_model.validation import (
     validate_configuration,
 )
 from physics_model.waveform import (
+    ChoppedLightning,
     DoubleExponential,
     WaveformParameters,
+    build_chopped_lightning,
     extract_front_time,
     extract_peak,
     extract_tail_time,
@@ -203,12 +221,14 @@ __all__ = [
     "timing_definition",
     # waveform
     "DoubleExponential",
+    "ChoppedLightning",
     "WaveformParameters",
     "fit_double_exponential",
     "extract_front_time",
     "extract_time_to_peak",
     "extract_tail_time",
     "extract_peak",
+    "build_chopped_lightning",
     # stress
     "CheckStatus",
     "StressCheck",
@@ -233,6 +253,21 @@ __all__ = [
     "buildable_resistances",
     "bracketing_values",
     "optimise",
+    "optimise_sequence",
+    "SequenceOptimisation",
+    "ShotOptimisation",
+    # sequences
+    "WaveformKind",
+    "CitationStatus",
+    "ConstraintStatus",
+    "StandardCitation",
+    "ShotSpec",
+    "TestSequence",
+    "ShotEvaluation",
+    "SequenceEvaluation",
+    "evaluate_shot",
+    "evaluate_sequence",
+    "impulse_type_for",
     # ml handoff
     "DATASET_FEATURE_COLUMNS",
     "DATASET_PHYSICS_COLUMNS",

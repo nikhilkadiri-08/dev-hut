@@ -360,6 +360,35 @@ class MLHandoff:
             "crest_kv": self.physics_crest_kv + residuals.crest_kv,
         }
 
+    def channels(self, residuals: ResidualCorrection | None = None) -> dict:
+        """Five distinct quantities. Measured data is absent in this repository.
+
+        ``physics.crest_kv`` is the loaded estimate. ``physics.workbook_echo_crest_kv``
+        is E20. A residual against E20 is not a correction to a real crest model.
+        """
+        residual_payload = None
+        corrected = None
+        if residuals is not None and not residuals.is_zero:
+            residual_payload = {
+                "front_peak_us": residuals.front_peak_us,
+                "tail_us": residuals.tail_us,
+                "crest_kv": residuals.crest_kv,
+                "crest_residual_is_against_workbook_echo": True,
+            }
+            corrected = self.corrected(residuals)
+        return {
+            "physics": {
+                "front_peak_us": self.physics_front_peak_us,
+                "tail_us": self.physics_tail_us,
+                "crest_kv": self.predicted_crest_kv,
+                "workbook_echo_crest_kv": self.physics_crest_kv,
+            },
+            "residual": residual_payload,
+            "corrected": corrected,
+            "requested": {"peak_kv": self.requested_kv},
+            "measured": None,
+        }
+
 
 def build_handoff(prediction: PhysicsPrediction) -> MLHandoff:
     """Package one physics prediction into the ML layer's input contract.

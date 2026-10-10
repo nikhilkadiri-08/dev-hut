@@ -12,9 +12,11 @@ from backend.schemas import (
     InventoryIn,
     PhysicsPredictIn,
     PredictRatingsIn,
+    ShotSpecIn,
     TestRequestIn,
+    TestSequenceIn,
 )
-from backend.units import f_to_pf, f_to_uf, kv_to_v, v_to_kv
+from backend.units import f_to_pf, f_to_uf, kv_to_v, us_to_s, v_to_kv
 from backend.validation import validate_request
 from physics_model import (
     GeneratorConfiguration,
@@ -31,7 +33,16 @@ from physics_model import (
 )
 from physics_model.calculations import Caveat, PhysicsPrediction
 from physics_model.ml_interface import ResidualCorrection
-from physics_model.optimiser import Candidate, OptimisationResult
+from physics_model.optimiser import Candidate, OptimisationResult, optimise_sequence
+from physics_model.test_sequence import (
+    CitationStatus,
+    ShotSpec,
+    StandardCitation,
+    TestSequence,
+    WaveformKind,
+    evaluate_sequence,
+    evaluate_shot,
+)
 
 _API_TO_IMPULSE = {
     "lightning": ImpulseType.LIGHTNING,
@@ -164,6 +175,7 @@ def serialize_prediction(prediction: PhysicsPrediction) -> dict[str, Any]:
         "equivalent_capacitance_pf": f_to_pf(c_eq),
         "stage_utilisation": prediction.stage_utilisation,
         "stored_energy_j": prediction.stored_energy_j,
+        "channels": build_handoff(prediction).channels(),
     }
 
 
@@ -196,6 +208,68 @@ def serialize_candidate(candidate: Candidate) -> dict[str, Any]:
         "climb_operations": candidate.climb_operations,
         "climb_detail": list(candidate.climb_detail),
         "unevaluated_checks": [item.code for item in report.unevaluated()],
+    }
+
+
+def _shot_spec_from_api(item: ShotSpecIn) -> ShotSpec:
+    return ShotSpec(
+        waveform_kind=WaveformKind(item.waveform_kind),
+        level_fraction=item.level_fraction,
+        chopping_time_s=None if item.chopping_time_us is None else us_to_s(item.chopping_time_us),
+        collapse_duration_s=(
+            None if item.collapse_duration_us is None else us_to_s(item.collapse_duration_us)
+        ),
+        collapse_shape=item.collapse_shape,
+        label=item.label or "",
+    )
+
+
+def sequence_from_api(body: TestSequenceIn) -> TestSequence:
+    if not body.shots:
+        raise PipelineError("EMPTY_SEQUENCE", "A sequence must contain at least one shot.")
+    known = bool(body.source and body.edition and body.clause)
+    citation = StandardCitation(
+        source=body.source,
+        edition=body.edition,
+        clause=body.clause,
+        status=CitationStatus.KNOWN if known else CitationStatus.UNRESOLVED,
+    )
+    try:
+        return TestSequence(
+            reference_voltage_v=kv_to_v(body.reference_peak_kv),
+            shots=tuple(_shot_spec_from_api(item) for item in body.shots),
+            name=body.name or "user_configured",
+            citation=citation,
+        )
+    except ValueError as exc:
+        raise PipelineError("INVALID_SEQUENCE", str(exc)) from exc
+
+
+def serialize_shot(evaluation) -> dict[str, Any]:
+    pred = serialize_prediction(evaluation.prediction)
+    chop = None
+    if evaluation.chopped is not None:
+        chop = {
+            "chopping_time_us": evaluation.spec.chopping_time_s * 1e6,
+            "collapse_duration_us": evaluation.spec.collapse_duration_s * 1e6,
+            "collapse_shape": evaluation.spec.collapse_shape,
+            "voltage_at_chop_kv": v_to_kv(evaluation.chopped.voltage_at_chop_v),
+            "preliminary": True,
+        }
+    return {
+        "label": evaluation.spec.label,
+        "waveform_kind": evaluation.spec.waveform_kind.value,
+        "level_fraction": evaluation.spec.level_fraction,
+        "requested_peak_kv": evaluation.requested_voltage_kv,
+        "predicted_crest_kv": evaluation.predicted_crest_kv,
+        "crest_kind": "loaded_estimate_N_Vstage_eta",
+        "tail_half_crossing_kv": evaluation.tail_half_crossing_kv,
+        "constraint_status": evaluation.constraint_status.value,
+        "confirmed_safe": evaluation.report.confirmed_safe,
+        "safety_label": evaluation.report.safety_label,
+        "predictions": pred,
+        "chop": chop,
+        "warnings": _caveats_to_warnings(evaluation.caveats),
     }
 
 
@@ -237,7 +311,7 @@ def predict_from_body(
         raise PipelineError("INVALID_CONFIGURATION", str(exc)) from exc
 
     warnings = _caveats_to_warnings(prediction.caveats)
-    return {
+    payload = {
         "success": True,
         "mode": "physics_only",
         "predictions": serialize_prediction(prediction),
@@ -249,6 +323,47 @@ def predict_from_body(
             "ratings_source": "request" if body.ratings is not None else "stored_profile",
         },
     }
+
+    if body.sequence is not None:
+        sequence = sequence_from_api(body.sequence)
+        evaluated = evaluate_sequence(sequence, configuration)
+        payload["sequence"] = {
+            "name": sequence.name,
+            "citation": {
+                "status": sequence.citation.status.value,
+                "source": sequence.citation.source,
+                "edition": sequence.citation.edition,
+                "clause": sequence.citation.clause,
+                "note": sequence.citation.note,
+            },
+            "shots": [serialize_shot(shot) for shot in evaluated.shots],
+            "all_confirmed_safe": evaluated.all_confirmed_safe,
+        }
+        payload["warnings"] = payload["warnings"] + [
+            {"code": "SEQUENCE_IS_USER_CONFIGURED",
+             "message": sequence.citation.note,
+             "severity": "notice"}
+        ]
+
+    if body.waveform_kind == "chopped_lightning":
+        if body.chopping_time_us is None or body.collapse_duration_us is None or body.collapse_shape is None:
+            raise PipelineError(
+                "CHOP_PARAMETERS_REQUIRED",
+                "Chopped lightning requires chopping_time_us, collapse_duration_us "
+                "and collapse_shape. They are not defaulted.",
+            )
+        spec = ShotSpec(
+            waveform_kind=WaveformKind.CHOPPED_LIGHTNING,
+            level_fraction=1.0,
+            chopping_time_s=us_to_s(body.chopping_time_us),
+            collapse_duration_s=us_to_s(body.collapse_duration_us),
+            collapse_shape=body.collapse_shape,
+        )
+        shot = evaluate_shot(spec, configuration, kv_to_v(body.requested_peak_kv))
+        payload["chop"] = serialize_shot(shot)["chop"]
+        payload["warnings"] = payload["warnings"] + serialize_shot(shot)["warnings"]
+
+    return payload
 
 
 def _apply_optional_residuals(
@@ -378,7 +493,7 @@ def optimise_from_request(
         if residual_correction is not None:
             predictions["residual_corrected"] = residual_correction
 
-    return {
+    payload = {
         "success": True,
         "mode": mode,
         "detail": _summarise_optimise(result, mode=mode, chosen=chosen),
@@ -397,6 +512,76 @@ def optimise_from_request(
         "candidate": presented,
         "validation": report.model_dump(),
     }
+
+    if request.sequence is not None:
+        sequence = sequence_from_api(request.sequence)
+        sequenced = optimise_sequence(physics_request, sequence)
+        payload["sequence"] = {
+            "name": sequence.name,
+            "citation": {
+                "status": sequence.citation.status.value,
+                "source": sequence.citation.source,
+                "edition": sequence.citation.edition,
+                "clause": sequence.citation.clause,
+                "note": sequence.citation.note,
+            },
+            "infeasible": sequenced.infeasible,
+            "all_confirmed_safe": sequenced.all_confirmed_safe,
+            "shots": [
+                {
+                    "waveform_kind": item.spec.waveform_kind.value,
+                    "level_fraction": item.spec.level_fraction,
+                    "requested_peak_kv": v_to_kv(item.requested_voltage_v),
+                    "constraint_status": (
+                        item.evaluation.constraint_status.value
+                        if item.evaluation is not None
+                        else "failed"
+                    ),
+                    "confirmed_safe": (
+                        item.result.recommended is not None
+                    ),
+                    "safety_label": (
+                        item.evaluation.report.safety_label
+                        if item.evaluation is not None
+                        else "unbuildable"
+                    ),
+                    "predicted_crest_kv": (
+                        item.evaluation.predicted_crest_kv
+                        if item.evaluation is not None
+                        else None
+                    ),
+                    "tail_half_crossing_kv": (
+                        item.evaluation.tail_half_crossing_kv
+                        if item.evaluation is not None
+                        else None
+                    ),
+                    "recommended": (
+                        serialize_candidate(item.result.recommended)
+                        if item.result.recommended is not None
+                        else None
+                    ),
+                    "best_unconfirmed": (
+                        serialize_candidate(item.result.best_unconfirmed)
+                        if item.result.best_unconfirmed is not None
+                        else None
+                    ),
+                    "rejection_reasons": [reason for _, reason in item.result.rejected[:8]],
+                }
+                for item in sequenced.shots
+            ],
+        }
+        if sequenced.infeasible:
+            payload["detail"] = (
+                payload["detail"]
+                + " Sequence contains a shot with no feasible catalogue candidate."
+            )
+        elif not sequenced.all_confirmed_safe:
+            payload["detail"] = (
+                payload["detail"]
+                + " Sequence shots are buildable-unconfirmed, not recommended/safe."
+            )
+
+    return payload
 
 
 def profile_provenance(stored) -> dict[str, Any]:

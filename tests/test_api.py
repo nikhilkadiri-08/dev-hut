@@ -452,3 +452,91 @@ def test_optimise_physics_exception_is_a_structured_500(monkeypatch):
     assert body["error"]["code"] == "PHYSICS_ERROR"
     assert "traceback" not in body["error"]["message"].lower()
     assert "exploded" not in body["error"]["message"].lower()
+
+
+def test_physics_predict_single_config_body_still_works_without_sequence():
+    response = client.post("/api/physics/predict", json=PREDICT_PAYLOAD)
+    assert response.status_code == 200
+    body = response.json()
+    assert "sequence" not in body
+    assert body["predictions"]["channels"]["measured"] is None
+    assert body["predictions"]["channels"]["requested"]["peak_kv"] == pytest.approx(1425.0)
+    assert body["predictions"]["crest_kind"] == "loaded_estimate_N_Vstage_eta"
+
+
+def test_physics_predict_sequence_returns_per_shot_results():
+    payload = {
+        **PREDICT_PAYLOAD,
+        "charging_voltage_per_stage_kv": 150.0,
+        "sequence": {
+            "reference_peak_kv": 1425.0,
+            "shots": [
+                {"waveform_kind": "lightning_full", "level_fraction": 0.5, "label": "half"},
+                {"waveform_kind": "lightning_full", "level_fraction": 1.0, "label": "full"},
+            ],
+        },
+    }
+    body = client.post("/api/physics/predict", json=payload).json()
+    assert body["success"] is True
+    shots = body["sequence"]["shots"]
+    assert [s["label"] for s in shots] == ["half", "full"]
+    assert shots[0]["requested_peak_kv"] == pytest.approx(712.5)
+    assert shots[0]["predicted_crest_kv"] != pytest.approx(shots[0]["tail_half_crossing_kv"])
+    assert shots[0]["constraint_status"] in {"unverified", "failed"}
+    assert body["sequence"]["citation"]["status"] == "unresolved"
+
+
+def test_physics_predict_chopped_requires_explicit_parameters():
+    payload = {**PREDICT_PAYLOAD, "waveform_kind": "chopped_lightning"}
+    response = client.post("/api/physics/predict", json=payload)
+    assert response.status_code == 422
+
+
+def test_physics_predict_chopped_returns_a_labelled_collapse():
+    payload = {
+        **PREDICT_PAYLOAD,
+        "waveform_kind": "chopped_lightning",
+        "chopping_time_us": 3.0,
+        "collapse_duration_us": 0.4,
+        "collapse_shape": "linear",
+    }
+    body = client.post("/api/physics/predict", json=payload).json()
+    assert body["success"] is True
+    assert body["chop"]["preliminary"] is True
+    assert body["chop"]["chopping_time_us"] == pytest.approx(3.0)
+
+
+def test_optimise_sequence_is_physics_only_and_unverified():
+    payload = {
+        **WORKBOOK_PAYLOAD,
+        "sequence": {
+            "reference_peak_kv": 1425.0,
+            "shots": [
+                {"waveform_kind": "lightning_full", "level_fraction": 0.5},
+                {"waveform_kind": "lightning_full", "level_fraction": 1.0},
+            ],
+        },
+    }
+    response = client.post("/api/optimise", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "physics_only"
+    assert body["sequence"]["all_confirmed_safe"] is False
+    assert len(body["sequence"]["shots"]) == 2
+    assert body["sequence"]["shots"][0]["requested_peak_kv"] == pytest.approx(712.5)
+
+
+def test_optimise_infeasible_sequence_shot_is_reported():
+    payload = {
+        **WORKBOOK_PAYLOAD,
+        "impulse_type": "switching",
+        "required_peak_kv": 1025.0,
+        "sequence": {
+            "reference_peak_kv": 1025.0,
+            "shots": [{"waveform_kind": "switching", "level_fraction": 1.0}],
+        },
+    }
+    body = client.post("/api/optimise", json=payload).json()
+    assert body["success"] is True
+    assert body["sequence"]["all_confirmed_safe"] is False
+    assert body["sequence"]["shots"][0]["confirmed_safe"] is False

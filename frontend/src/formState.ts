@@ -53,6 +53,7 @@ export interface OperatorForm {
   overrideLabDefaults: boolean;
   strayInductanceUh: string;
   expectedEfficiency: string;
+  includeLevelSequence: boolean;
 }
 
 export function initialOperatorForm(
@@ -76,17 +77,19 @@ export function initialOperatorForm(
     overrideLabDefaults: false,
     strayInductanceUh: String(stored.profile.default_stray_inductance_uh),
     expectedEfficiency: String(stored.profile.default_efficiency),
+    includeLevelSequence: false,
   };
 }
 
 export function buildOperatorPayload(form: OperatorForm) {
-  return {
+  const peak = numeric(form.requiredPeakKv);
+  const payload: Record<string, unknown> = {
     test_object_type_id: form.testObjectTypeId,
     test_object_label: form.testObjectLabel.trim() || null,
     standard_id: form.standardId,
     impulse_type: form.impulseType,
     polarity: form.polarity,
-    required_peak_kv: numeric(form.requiredPeakKv),
+    required_peak_kv: peak,
     load_capacitance_pf: numeric(form.loadCapacitancePf),
     divider_capacitance_pf: numeric(form.dividerCapacitancePf),
     stray_capacitance_pf: numeric(form.strayCapacitancePf),
@@ -95,6 +98,25 @@ export function buildOperatorPayload(form: OperatorForm) {
       ? numeric(form.expectedEfficiency)
       : null,
   };
+  if (form.includeLevelSequence && typeof peak === "number") {
+    payload.sequence = {
+      reference_peak_kv: peak,
+      name: "operator_50_100",
+      shots: [
+        {
+          waveform_kind: form.impulseType === "switching" ? "switching" : "lightning_full",
+          level_fraction: 0.5,
+          label: "50%",
+        },
+        {
+          waveform_kind: form.impulseType === "switching" ? "switching" : "lightning_full",
+          level_fraction: 1.0,
+          label: "100%",
+        },
+      ],
+    };
+  }
+  return payload;
 }
 
 // ---------------------------------------------------------------------------

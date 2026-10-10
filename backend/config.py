@@ -570,6 +570,23 @@ def build_assumption_register() -> AssumptionRegister:
     )
     register.add(
         Assumption(
+            key="generator.modelling_c_energy",
+            subject="Workbook modelling C versus a 2.5 kJ energy figure",
+            value="3 uF/stage => 60 kJ at 200 kV; 2.5 kJ would imply ~0.125 uF",
+            provenance=conflicting(
+                Source.WORKBOOK,
+                f"{WORKBOOK} / Hybrid Calculator!B15",
+                "Workbook modelling capacitance is 3 uF/stage. "
+                "0.5 * 3 uF * (200 kV)^2 = 60 kJ/stage. A 2.5 kJ (≈0.125 uF at "
+                "200 kV) figure is not present as a sourced file in this repository. "
+                "The two cannot be the same capacitor. Calculations keep the "
+                "workbook 3 uF and do not treat either energy as verified.",
+            ),
+            impact="Stored-energy numbers are derived from the workbook C, not a datasheet.",
+        )
+    )
+    register.add(
+        Assumption(
             key="efficiency",
             subject="Generator voltage efficiency",
             value=f"user input, default {DEFAULT_EFFICIENCY:g}",

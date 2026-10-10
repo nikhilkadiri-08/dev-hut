@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, runOptimisation, validateTestRequest } from "../api";
+import { ApiError, runOptimisation, validateTestRequest, type SequenceShotOut } from "../api";
 import {
   buildOperatorPayload,
   initialOperatorForm,
@@ -34,6 +34,11 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
   const [optimiseMessage, setOptimiseMessage] = useState<string | null>(null);
   const [optimiseImplemented, setOptimiseImplemented] = useState(false);
   const [optimiseMode, setOptimiseMode] = useState<string | null>(null);
+  const [requestedCrestKv, setRequestedCrestKv] = useState<number | null>(null);
+  const [predictedCrestKv, setPredictedCrestKv] = useState<number | null>(null);
+  const [safetyLabel, setSafetyLabel] = useState<string | null>(null);
+  const [confirmedSafe, setConfirmedSafe] = useState<boolean | null>(null);
+  const [sequenceShots, setSequenceShots] = useState<SequenceShotOut[] | null>(null);
 
   const payload = useMemo(() => buildOperatorPayload(form), [form]);
   const payloadKey = useMemo(() => JSON.stringify(payload), [payload]);
@@ -89,11 +94,21 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
     setOptimiseMessage(null);
     setOptimiseImplemented(false);
     setOptimiseMode(null);
+    setRequestedCrestKv(null);
+    setPredictedCrestKv(null);
+    setSafetyLabel(null);
+    setConfirmedSafe(null);
+    setSequenceShots(null);
     try {
       const outcome = await runOptimisation(latestPayload.current);
       setOptimiseMessage(outcome.detail);
       setOptimiseImplemented(outcome.implemented);
       setOptimiseMode(outcome.mode ?? null);
+      setRequestedCrestKv(outcome.requestedPeakKv ?? null);
+      setPredictedCrestKv(outcome.predictedCrestKv ?? null);
+      setSafetyLabel(outcome.safetyLabel ?? null);
+      setConfirmedSafe(outcome.confirmedSafe ?? null);
+      setSequenceShots(outcome.sequence ?? null);
     } catch {
       setOptimiseMessage("Could not reach the optimisation endpoint.");
       setOptimiseImplemented(false);
@@ -315,6 +330,16 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
             Run optimisation
           </button>
           <p className="actions__note">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={form.includeLevelSequence}
+              onChange={(event) =>
+                update("includeLevelSequence")(event.target.checked)
+              }
+            />
+            <span>Also evaluate 50% then 100% of this requested peak</span>
+          </label>
             {result?.ok
               ? "Inputs are accepted. Optimisation uses the physics model only until a residual model is loaded."
               : "Fix the blocking problems before running the optimisation."}
@@ -330,6 +355,26 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
                 : "Optimisation could not run"}
             </h3>
             <p className="card__body">{optimiseMessage}</p>
+            {optimiseImplemented && requestedCrestKv != null && predictedCrestKv != null ? (
+              <p className="card__body">
+                Requested {requestedCrestKv.toFixed(1)} kV vs predicted loaded crest{" "}
+                {predictedCrestKv.toFixed(1)} kV
+                {confirmedSafe
+                  ? `. Safety: ${safetyLabel ?? "safe"}.`
+                  : `. Safety: ${safetyLabel ?? "unverified"} (not recommended).`}
+              </p>
+            ) : null}
+            {sequenceShots && sequenceShots.length > 0 ? (
+              <ul className="card__body">
+                {sequenceShots.map((shot, index) => (
+                  <li key={`${shot.waveform_kind}-${index}`}>
+                    {shot.level_fraction} × ref: requested {shot.requested_peak_kv.toFixed(1)} kV,
+                    predicted {shot.predicted_crest_kv ?? "—"} kV, {shot.constraint_status},{" "}
+                    {shot.safety_label}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </section>
         ) : null}
       </form>

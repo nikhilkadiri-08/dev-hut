@@ -51,12 +51,14 @@ from physics_model.inputs import ImpulseType
 __all__ = [
     "IS_WORKBOOK_OUTPUT",
     "DoubleExponential",
+    "ChoppedLightning",
     "WaveformParameters",
     "fit_double_exponential",
     "extract_front_time",
     "extract_time_to_peak",
     "extract_tail_time",
     "extract_peak",
+    "build_chopped_lightning",
 ]
 
 #: Guard against this module ever being mistaken for ported workbook content.
@@ -369,5 +371,109 @@ def fit_double_exponential(
         achieved_tail_time_s=extract_tail_time(shape),
         iterations=used,
         converged=converged,
+        caveats=caveats,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Chopped lightning. Preliminary. Not a circuit chop and not a CPRI measurement.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class ChoppedLightning:
+    """A lightning-shaped front followed by an assumed rapid collapse.
+
+    This is **not** a validated chopped-impulse model. The pre-chop segment is the
+    same double-exponential reconstruction used for full waves. The collapse is an
+    explicit configurable assumption (linear or exponential to zero over a stated
+    duration). A smooth double exponential with an arbitrary cutoff is not treated
+    as a laboratory chop.
+
+    ``chopping_time_s`` and ``collapse_duration_s`` are required inputs. There is
+    no default; the IEC clause for a standard chop is not in this repository.
+    """
+
+    pre_chop: DoubleExponential
+    chopping_time_s: float
+    collapse_duration_s: float
+    collapse_shape: str
+    caveats: tuple[Caveat, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.chopping_time_s <= 0.0:
+            raise ValueError(
+                f"chopping_time_s must be positive, got {self.chopping_time_s}"
+            )
+        if self.collapse_duration_s <= 0.0:
+            raise ValueError(
+                f"collapse_duration_s must be positive, got {self.collapse_duration_s}"
+            )
+        if self.collapse_shape not in ("linear", "exponential"):
+            raise ValueError(
+                f"collapse_shape must be 'linear' or 'exponential', got {self.collapse_shape!r}"
+            )
+
+    @property
+    def voltage_at_chop_v(self) -> float:
+        return self.pre_chop.voltage_at(self.chopping_time_s)
+
+    @property
+    def collapse_end_s(self) -> float:
+        return self.chopping_time_s + self.collapse_duration_s
+
+    def voltage_at(self, t_s: float) -> float:
+        if t_s <= 0.0:
+            return 0.0
+        if t_s < self.chopping_time_s:
+            return self.pre_chop.voltage_at(t_s)
+        if t_s >= self.collapse_end_s:
+            return 0.0
+        start = self.voltage_at_chop_v
+        frac = (t_s - self.chopping_time_s) / self.collapse_duration_s
+        if self.collapse_shape == "linear":
+            return start * (1.0 - frac)
+        return start * math.exp(-8.0 * frac)
+
+    def sample(self, duration_s: float, points: int = 2000) -> tuple[np.ndarray, np.ndarray]:
+        if duration_s <= 0.0:
+            raise ValueError(f"duration_s must be positive, got {duration_s}")
+        if points < 2:
+            raise ValueError(f"points must be at least 2, got {points}")
+        t = np.linspace(0.0, duration_s, points)
+        v = np.array([self.voltage_at(float(x)) for x in t])
+        return t, v
+
+
+def build_chopped_lightning(
+    pre_chop: DoubleExponential,
+    *,
+    chopping_time_s: float,
+    collapse_duration_s: float,
+    collapse_shape: str,
+) -> ChoppedLightning:
+    """Attach an assumed collapse. All chop parameters must be supplied."""
+    caveats = (
+        Caveat(
+            "CHOP_COLLAPSE_IS_ASSUMPTION",
+            f"The collapse after {s_to_us(chopping_time_s):.4g} us is a "
+            f"{collapse_shape} drop to zero over {s_to_us(collapse_duration_s):.4g} us. "
+            "That duration and shape are configurable assumptions, not a CPRI "
+            "measurement and not a solved chopping-gap circuit.",
+            Severity.WARNING,
+        ),
+        Caveat(
+            "CHOP_NOT_A_VALIDATED_IEC_WAVE",
+            "No IEC edition or clause for chopped lightning is stored in this "
+            "repository. The pre-chop shape is a reconstruction of workbook "
+            "scalars; the collapse is not a validated standard chop.",
+            Severity.WARNING,
+        ),
+    )
+    return ChoppedLightning(
+        pre_chop=pre_chop,
+        chopping_time_s=chopping_time_s,
+        collapse_duration_s=collapse_duration_s,
+        collapse_shape=collapse_shape,
         caveats=caveats,
     )

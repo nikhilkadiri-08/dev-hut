@@ -425,6 +425,24 @@ def assess_capacitor_stress(
             )
         )
 
+    # Workbook modelling C is 3 uF. At the 200 kV stage rating that is 60 kJ.
+    # A 2.5 kJ (~0.125 uF at 200 kV) figure is not present as a sourced file here.
+    rated_energy = stored_energy(ratings.stage_capacitance_f, ratings.max_stage_voltage_v)
+    caveats.append(
+        Caveat(
+            "MODELLING_C_ENERGY_UNVERIFIED",
+            f"Energy is computed from the workbook modelling capacitance "
+            f"({ratings.stage_capacitance_f * 1e6:.4g} uF). At the "
+            f"{ratings.max_stage_voltage_v / 1000.0:.4g} kV stage rating that is "
+            f"{rated_energy / 1000.0:.4g} kJ/stage. A 2.5 kJ rating "
+            f"(≈0.125 uF at 200 kV) is not sourced from any file in this "
+            f"repository. The two cannot describe the same capacitor. This "
+            f"package keeps the workbook 3 uF for E11 and does not treat either "
+            f"energy as verified.",
+            Severity.WARNING,
+        )
+    )
+
     return CapacitorStressReport(
         stage_voltage_v=stage_v,
         generator_output_voltage_v=output_v,

@@ -115,6 +115,9 @@ __all__ = [
     "buildable_resistances",
     "bracketing_values",
     "optimise",
+    "optimise_sequence",
+    "SequenceOptimisation",
+    "ShotOptimisation",
 ]
 
 
@@ -585,3 +588,102 @@ def optimise(request: OptimisationRequest) -> OptimisationResult:
         )
 
     return result
+
+
+@dataclass
+class ShotOptimisation:
+    """One shot's catalogue search plus, when a candidate exists, its evaluation."""
+
+    spec: object
+    requested_voltage_v: float
+    result: OptimisationResult
+    evaluation: object | None
+
+
+@dataclass
+class SequenceOptimisation:
+    """Per-shot optimiser results.
+
+    ``all_confirmed_safe`` is true only when every shot has a confirmed-safe
+    recommended candidate. Unverified shots are never labelled safe.
+    """
+
+    sequence: object
+    shots: list[ShotOptimisation]
+
+    @property
+    def all_confirmed_safe(self) -> bool:
+        return all(item.result.recommended is not None for item in self.shots)
+
+    @property
+    def infeasible(self) -> bool:
+        return any(
+            item.result.recommended is None and item.result.best_unconfirmed is None
+            for item in self.shots
+        )
+
+
+def optimise_sequence(
+    base: OptimisationRequest,
+    sequence: object,
+) -> SequenceOptimisation:
+    """Run the existing catalogue search once per configured shot.
+
+    Each shot uses its own requested voltage (reference × level fraction).
+    Chopped shots size resistors with the lightning workbook equations; the
+    chop itself is not inverted.
+    """
+    from physics_model.test_sequence import (
+        TestSequence,
+        WaveformKind,
+        evaluate_shot,
+        impulse_type_for,
+    )
+
+    if not isinstance(sequence, TestSequence):
+        raise TypeError("sequence must be a TestSequence")
+
+    items: list[ShotOptimisation] = []
+    for spec in sequence.shots:
+        kind = impulse_type_for(spec.waveform_kind)
+        request = OptimisationRequest(
+            requested_voltage_v=sequence.requested_voltage_v(spec),
+            impulse_type=kind,
+            circuit=base.circuit,
+            ratings=base.ratings,
+            inventory=base.inventory,
+            installed=base.installed,
+            shots_per_hour=base.shots_per_hour,
+            weights=base.weights,
+        )
+        result = optimise(request)
+        chosen = result.recommended or result.best_unconfirmed
+        evaluation = None
+        if chosen is not None:
+            evaluation = evaluate_shot(
+                spec,
+                chosen.configuration,
+                request.requested_voltage_v,
+                inventory=base.inventory,
+                shots_per_hour=base.shots_per_hour,
+            )
+            if spec.waveform_kind is WaveformKind.CHOPPED_LIGHTNING:
+                evaluation.caveats.append(
+                    Caveat(
+                        "CHOP_NOT_USED_FOR_RESISTOR_SIZING",
+                        "Resistors were sized from the lightning workbook equations. "
+                        "The assumed collapse is overlaid afterwards and is not an "
+                        "inverted circuit chop.",
+                        Severity.WARNING,
+                    )
+                )
+        items.append(
+            ShotOptimisation(
+                spec=spec,
+                requested_voltage_v=request.requested_voltage_v,
+                result=result,
+                evaluation=evaluation,
+            )
+        )
+
+    return SequenceOptimisation(sequence=sequence, shots=items)

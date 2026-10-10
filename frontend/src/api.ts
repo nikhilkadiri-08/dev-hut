@@ -100,12 +100,28 @@ export interface OptimiseCandidate {
   presentation: string;
 }
 
+export interface SequenceShotOut {
+  waveform_kind: string;
+  level_fraction: number;
+  requested_peak_kv: number;
+  predicted_crest_kv?: number | null;
+  tail_half_crossing_kv?: number | null;
+  constraint_status: string;
+  confirmed_safe: boolean;
+  safety_label: string;
+}
+
 export interface OptimiseOutcome {
   implemented: boolean;
   detail: string;
   success?: boolean;
   mode?: string;
   candidate?: OptimiseCandidate | null;
+  requestedPeakKv?: number | null;
+  predictedCrestKv?: number | null;
+  safetyLabel?: string | null;
+  confirmedSafe?: boolean | null;
+  sequence?: SequenceShotOut[] | null;
   warnings?: Array<{ code: string; message: string }>;
 }
 
@@ -147,17 +163,25 @@ export async function runOptimisation(payload: unknown): Promise<OptimiseOutcome
     candidate?: OptimiseCandidate | null;
     recommended?: OptimiseCandidate | null;
     best_unconfirmed?: OptimiseCandidate | null;
+    predictions?: { requested_peak_kv?: number; crest_voltage_kv?: number };
+    sequence?: { shots?: SequenceShotOut[] };
     warnings?: Array<{ code: string; message: string }>;
     error?: { message?: string };
     errors?: Array<{ message?: string }>;
   }>(response);
   if (response.ok && body.success !== false) {
+    const candidate = body.candidate ?? body.recommended ?? body.best_unconfirmed ?? null;
     return {
       implemented: true,
       detail: body.detail ?? "Physics-only optimisation completed.",
       success: true,
       mode: body.mode,
-      candidate: body.candidate ?? body.recommended ?? body.best_unconfirmed ?? null,
+      candidate,
+      requestedPeakKv: body.predictions?.requested_peak_kv ?? null,
+      predictedCrestKv: body.predictions?.crest_voltage_kv ?? candidate?.crest_voltage_kv ?? null,
+      safetyLabel: candidate?.safety_label ?? null,
+      confirmedSafe: candidate?.confirmed_safe ?? null,
+      sequence: body.sequence?.shots ?? null,
       warnings: body.warnings,
     };
   }

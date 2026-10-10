@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from backend import config
 
 ImpulseType = Literal["lightning", "switching"]
+WaveformKindIn = Literal["lightning_full", "switching", "chopped_lightning"]
 Polarity = Literal["positive", "negative"]
 Severity = Literal["error", "warning", "notice"]
 
@@ -181,6 +182,7 @@ class OperatorRequestIn(BaseModel):
     stray_capacitance_pf: float = config.DEFAULT_STRAY_CAPACITANCE_PF
     stray_inductance_uh: Optional[float] = None
     expected_efficiency: Optional[float] = None
+    sequence: Optional["TestSequenceIn"] = None
 
 
 class TestRequestIn(BaseModel):
@@ -212,6 +214,7 @@ class TestRequestIn(BaseModel):
     circuit: TestCircuitIn
     generator: GeneratorConfigIn = Field(default_factory=GeneratorConfigIn)
     inventory: InventoryIn = Field(default_factory=InventoryIn)
+    sequence: Optional["TestSequenceIn"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +361,11 @@ class PhysicsPredictIn(BaseModel):
     stray_inductance_uh: float
     expected_efficiency: float
     ratings: Optional[PredictRatingsIn] = None
+    waveform_kind: Optional[WaveformKindIn] = None
+    chopping_time_us: Optional[float] = None
+    collapse_duration_us: Optional[float] = None
+    collapse_shape: Optional[Literal["linear", "exponential"]] = None
+    sequence: Optional["TestSequenceIn"] = None
 
     @field_validator(
         "requested_peak_kv",
@@ -377,6 +385,30 @@ class PhysicsPredictIn(BaseModel):
         if not math.isfinite(float(value)):
             raise ValueError("Enter a finite number.")
         return float(value)
+
+
+class ShotSpecIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    waveform_kind: WaveformKindIn
+    level_fraction: float
+    chopping_time_us: Optional[float] = None
+    collapse_duration_us: Optional[float] = None
+    collapse_shape: Optional[Literal["linear", "exponential"]] = None
+    label: Optional[str] = None
+
+
+class TestSequenceIn(BaseModel):
+    """User-configured shot list. Not a stored IEC procedure."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reference_peak_kv: float
+    shots: list[ShotSpecIn]
+    name: Optional[str] = None
+    source: Optional[str] = None
+    edition: Optional[str] = None
+    clause: Optional[str] = None
 
 
 class ApiErrorBody(BaseModel):
@@ -432,4 +464,5 @@ def merge_operator_request(
             external_front_ohms=list(profile.external_front_ohms),
             external_tail_ohms=list(profile.external_tail_ohms),
         ),
+        sequence=operator.sequence,
     )
