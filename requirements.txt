@@ -1,0 +1,10 @@
+# Lower bounds only. The project is developed on Python 3.14, and pinning exact
+# versions forced pip to build pydantic-core from source for lack of a 3.14 wheel.
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic>=2.12
+pandas>=2.2
+openpyxl>=3.1
+numpy>=2.2
+pytest>=8.3
+httpx>=0.28
