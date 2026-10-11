@@ -27,11 +27,7 @@ export function LiteratureHint({ selected, ranges, allowSearch }: LiteratureHint
 
   return (
     <div className="literature">
-      <p className="literature__title">Published typical values</p>
-      <p className="literature__disclaimer">
-        Open-literature ranges for when this object is not in the workbook. They are
-        not measurements of the test piece. Use the nameplate if you have one.
-      </p>
+      <p className="literature__title">Typical values</p>
       {shown.map((item) => (
         <p key={item.id} className="literature__row">
           <strong>
@@ -39,10 +35,10 @@ export function LiteratureHint({ selected, ranges, allowSearch }: LiteratureHint
               ? `${item.typical_min} ${item.unit}`
               : `${item.typical_min}–${item.typical_max} ${item.unit}`}
           </strong>
-          {` ${item.label}. ${item.note} `}
+          {` ${item.label} `}
           {item.sources[0] ? (
             <a href={item.sources[0].url} target="_blank" rel="noreferrer">
-              {item.sources[0].title}
+              source
             </a>
           ) : null}
         </p>
@@ -59,25 +55,25 @@ export function LiteratureHint({ selected, ranges, allowSearch }: LiteratureHint
                 setNote(
                   result.matched
                     ? result.insulation_levels.length
-                      ? `Standard rated withstand voltages for Um ≈ ${result.insulation_levels[0].um_kv} kV: lightning ${result.insulation_levels[0].standard_lightning_impulse_kv.join(", ")} kV.`
+                      ? `Um ${result.insulation_levels[0].um_kv} kV · lightning ${result.insulation_levels[0].standard_lightning_impulse_kv.join(", ")} kV.`
                       : null
-                    : "No cited match. Measure the object or add a paper to data/literature/open_references.json.",
+                    : "No cited match.",
                 );
               })
               .catch((error: Error) => setNote(error.message));
           }}
         >
           <label className="field">
-            <span className="field__label">Look up a new object or voltage class</span>
+            <span className="field__label">Look up</span>
             <input
               className="input"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="e.g. 420 kV bushing, switching impulse, 300 kV"
+              placeholder="420 kV bushing"
             />
           </label>
           <button type="submit" className="button button--ghost">
-            Search literature
+            Search
           </button>
         </form>
       ) : null}

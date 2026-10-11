@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, runOptimisation, validateTestRequest, type SequenceShotOut } from "../api";
+import {
+  ApiError,
+  fetchMlResiduals,
+  runOptimisation,
+  validateTestRequest,
+  type CorrectedMetrics,
+  type MlResidualReport,
+  type SequenceShotOut,
+  type WaveformOverlay,
+  type WaveformPayload,
+} from "../api";
+import { AnnInferenceDiagram } from "./AnnInferenceDiagram";
+import { WaveformChart } from "./WaveformChart";
 import {
   buildOperatorPayload,
   initialOperatorForm,
@@ -36,9 +48,22 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
   const [optimiseMode, setOptimiseMode] = useState<string | null>(null);
   const [requestedCrestKv, setRequestedCrestKv] = useState<number | null>(null);
   const [predictedCrestKv, setPredictedCrestKv] = useState<number | null>(null);
-  const [safetyLabel, setSafetyLabel] = useState<string | null>(null);
   const [confirmedSafe, setConfirmedSafe] = useState<boolean | null>(null);
   const [sequenceShots, setSequenceShots] = useState<SequenceShotOut[] | null>(null);
+  const [waveform, setWaveform] = useState<WaveformPayload | null>(null);
+  const [correctedWaveform, setCorrectedWaveform] = useState<WaveformPayload | null>(null);
+  const [requestedWaveform, setRequestedWaveform] = useState<WaveformPayload | null>(null);
+  const [overlay, setOverlay] = useState<WaveformOverlay | null>(null);
+  const [correctedMetrics, setCorrectedMetrics] = useState<CorrectedMetrics | null>(null);
+  const [physicsFrontUs, setPhysicsFrontUs] = useState<number | null>(null);
+  const [physicsTailUs, setPhysicsTailUs] = useState<number | null>(null);
+  const [frontBuild, setFrontBuild] = useState<string | null>(null);
+  const [tailBuild, setTailBuild] = useState<string | null>(null);
+  const [presentation, setPresentation] = useState<string | null>(null);
+  const [optimiseWarnings, setOptimiseWarnings] = useState<Array<{ code: string; message: string }>>([]);
+  const [annPhase, setAnnPhase] = useState<"idle" | "running">("idle");
+  const [annReport, setAnnReport] = useState<MlResidualReport | null>(null);
+  const [annError, setAnnError] = useState<string | null>(null);
 
   const payload = useMemo(() => buildOperatorPayload(form), [form]);
   const payloadKey = useMemo(() => JSON.stringify(payload), [payload]);
@@ -90,30 +115,85 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
     [metadata],
   );
 
+  const optimiseRequest = useRef(0);
   const onOptimise = useCallback(async () => {
+    const request = ++optimiseRequest.current;
     setOptimiseMessage(null);
     setOptimiseImplemented(false);
     setOptimiseMode(null);
     setRequestedCrestKv(null);
     setPredictedCrestKv(null);
-    setSafetyLabel(null);
     setConfirmedSafe(null);
     setSequenceShots(null);
+    setWaveform(null);
+    setCorrectedWaveform(null);
+    setRequestedWaveform(null);
+    setOverlay(null);
+    setCorrectedMetrics(null);
+    setPhysicsFrontUs(null);
+    setPhysicsTailUs(null);
+    setFrontBuild(null);
+    setTailBuild(null);
+    setPresentation(null);
+    setOptimiseWarnings([]);
+    setAnnPhase("running");
+    setAnnError(null);
+    const residualPromise = fetchMlResiduals(latestPayload.current).then(
+      (report) => ({ report, error: null as string | null }),
+      (reason: unknown) => ({
+        report: null,
+        error: reason instanceof ApiError ? reason.message : "Could not reach the residual endpoint.",
+      }),
+    );
     try {
       const outcome = await runOptimisation(latestPayload.current);
+      if (request !== optimiseRequest.current) return;
       setOptimiseMessage(outcome.detail);
       setOptimiseImplemented(outcome.implemented);
       setOptimiseMode(outcome.mode ?? null);
       setRequestedCrestKv(outcome.requestedPeakKv ?? null);
       setPredictedCrestKv(outcome.predictedCrestKv ?? null);
-      setSafetyLabel(outcome.safetyLabel ?? null);
       setConfirmedSafe(outcome.confirmedSafe ?? null);
       setSequenceShots(outcome.sequence ?? null);
-    } catch {
-      setOptimiseMessage("Could not reach the optimisation endpoint.");
+      setWaveform(outcome.waveform ?? null);
+      setCorrectedWaveform(outcome.correctedWaveform ?? null);
+      setRequestedWaveform(outcome.requestedWaveform ?? null);
+      setOverlay(outcome.overlay ?? null);
+      setCorrectedMetrics(outcome.correctedMetrics ?? null);
+      setPhysicsFrontUs(outcome.physicsMetrics?.front_time_us ?? null);
+      setPhysicsTailUs(outcome.physicsMetrics?.tail_time_us ?? null);
+      setFrontBuild(outcome.frontBuild ?? null);
+      setTailBuild(outcome.tailBuild ?? null);
+      setPresentation(outcome.presentation ?? null);
+      setOptimiseWarnings(outcome.warnings ?? []);
+    } catch (error: unknown) {
+      setOptimiseMessage(
+        error instanceof ApiError ? error.message : "Could not reach the optimisation endpoint.",
+      );
       setOptimiseImplemented(false);
     }
+    const residual = await residualPromise;
+    if (request !== optimiseRequest.current) return;
+    setAnnReport(residual.report);
+    setAnnError(residual.error);
+    setAnnPhase("idle");
   }, []);
+
+  // A previous lightning plot must not stay on screen after the impulse type
+  // changes. Ask for the waveform that matches the selection.
+  const displayedWaveform = useRef(false);
+  displayedWaveform.current = waveform !== null;
+  const seenImpulseType = useRef(form.impulseType);
+  useEffect(() => {
+    if (seenImpulseType.current === form.impulseType) return;
+    seenImpulseType.current = form.impulseType;
+    if (displayedWaveform.current) {
+      void onOptimise();
+    } else {
+      setAnnReport(null);
+      setAnnError(null);
+    }
+  }, [form.impulseType, onOptimise]);
 
   const issues: Issue[] = result
     ? [...result.errors, ...result.warnings, ...result.notices]
@@ -128,24 +208,23 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
       <form className="panel" onSubmit={(event) => event.preventDefault()}>
         <section className="card card--quiet">
           <h3 className="card__title">
-            Generator in use
+            Generator
             {profile.stored.is_factory_default ? (
               <span className="pill pill--warning">unconfirmed</span>
             ) : null}
           </h3>
           <p className="card__body">
-            {lab.max_stages} stages at {lab.max_stage_voltage_kv} kV,{" "}
-            {lab.stage_capacitance_uf} &micro;F per stage,{" "}
-            {lab.front_resistors.length} front and {lab.tail_resistors.length} tail
-            resistor values in store.
+            {lab.max_stages} stages · {lab.max_stage_voltage_kv} kV ·{" "}
+            {lab.stage_capacitance_uf} &micro;F · {lab.front_resistors.length} front ·{" "}
+            {lab.tail_resistors.length} tail
           </p>
           <button type="button" className="button button--ghost" onClick={onOpenAdmin}>
-            Change in generator setup
+            Generator setup
           </button>
         </section>
 
         <fieldset className="group">
-          <legend className="group__legend">What are you testing?</legend>
+          <legend className="group__legend">Test object</legend>
           <Field label="Test object">
             <select
               className="input"
@@ -159,13 +238,8 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
               ))}
             </select>
           </Field>
-          {selectedObject ? (
-            <p className="group__note">
-              {selectedObject.description}
-              {selectedObject.provenance.status === "placeholder" ? (
-                <em className="tag tag--placeholder">placeholder capacitance</em>
-              ) : null}
-            </p>
+          {selectedObject?.provenance.status === "placeholder" ? (
+            <em className="tag tag--placeholder">Placeholder capacitance</em>
           ) : null}
           <LiteratureHint
             selected={selectedObject}
@@ -173,17 +247,17 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
             allowSearch={form.testObjectTypeId === "custom" || Boolean(selectedObject?.literature_kind)}
           />
           <TextField
-            label="Reference or serial number"
+            label="Reference"
             value={form.testObjectLabel}
             onChange={update("testObjectLabel")}
-            placeholder="optional, for traceability"
+            placeholder="serial number"
             path="test_object_label"
             issues={issues}
           />
         </fieldset>
 
         <fieldset className="group">
-          <legend className="group__legend">What result do you need?</legend>
+          <legend className="group__legend">Target</legend>
           <Field label="Standard" path="standard_id" issues={issues}>
             <select
               className="input"
@@ -193,9 +267,8 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
               <option value={metadata.standard.id}>{metadata.standard.label}</option>
             </select>
           </Field>
-          <p className="group__note">{metadata.standard.edition_note}</p>
 
-          <Field label="Impulse type" path="impulse_type" issues={issues}>
+          <Field label="Impulse" path="impulse_type" issues={issues}>
             <div className="segmented">
               {metadata.impulse_types.map((spec) => (
                 <button
@@ -231,14 +304,14 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
           </Field>
 
           <NumberField
-            label="Required peak voltage"
+            label="Crest"
             unit="kV"
             value={form.requiredPeakKv}
             onChange={update("requiredPeakKv")}
             step="5"
             path="required_peak_kv"
             issues={issues}
-            hint={`This generator reaches about ${(
+            hint={`Up to ${(
               lab.max_stages *
               lab.max_stage_voltage_kv *
               lab.default_efficiency
@@ -247,13 +320,9 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
         </fieldset>
 
         <fieldset className="group">
-          <legend className="group__legend">Test circuit</legend>
-          <p className="group__note">
-            These change with every setup, which is why they are entered per test
-            rather than in the generator setup.
-          </p>
+          <legend className="group__legend">Circuit</legend>
           <NumberField
-            label="Test object capacitance"
+            label="Load capacitance"
             unit="pF"
             value={form.loadCapacitancePf}
             onChange={update("loadCapacitancePf")}
@@ -261,7 +330,7 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
             issues={issues}
           />
           <NumberField
-            label="Measuring divider capacitance"
+            label="Divider capacitance"
             unit="pF"
             value={form.dividerCapacitancePf}
             onChange={update("dividerCapacitancePf")}
@@ -275,12 +344,11 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
             onChange={update("strayCapacitancePf")}
             path="stray_capacitance_pf"
             issues={issues}
-            hint="Leads, layout and earth return path"
           />
         </fieldset>
 
         <fieldset className="group">
-          <legend className="group__legend">Laboratory defaults</legend>
+          <legend className="group__legend">Defaults</legend>
           <label className="checkbox">
             <input
               type="checkbox"
@@ -303,7 +371,7 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
                 issues={issues}
               />
               <NumberField
-                label="Expected efficiency"
+                label="Efficiency"
                 unit="fraction"
                 value={form.expectedEfficiency}
                 onChange={update("expectedEfficiency")}
@@ -314,8 +382,7 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
             </div>
           ) : (
             <p className="group__note">
-              Using {lab.default_stray_inductance_uh} &micro;H stray inductance and{" "}
-              {lab.default_efficiency} efficiency from the generator setup.
+              {lab.default_stray_inductance_uh} &micro;H · efficiency {lab.default_efficiency}
             </p>
           )}
         </fieldset>
@@ -327,9 +394,8 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
             onClick={onOptimise}
             disabled={!result?.ok}
           >
-            Run optimisation
+            Run
           </button>
-          <p className="actions__note">
           <label className="checkbox">
             <input
               type="checkbox"
@@ -338,48 +404,102 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
                 update("includeLevelSequence")(event.target.checked)
               }
             />
-            <span>Also evaluate 50% then 100% of this requested peak</span>
+            <span>Also run 50% then 100%</span>
           </label>
-            {result?.ok
-              ? "Inputs are accepted. Optimisation uses the physics model only until a residual model is loaded."
-              : "Fix the blocking problems before running the optimisation."}
-          </p>
+          {result && !result.ok ? (
+            <p className="field__issue field__issue--error">Fix the errors, then Run.</p>
+          ) : null}
         </div>
         {optimiseMessage ? (
           <section className={`card ${optimiseImplemented ? "card--quiet" : "card--pending"}`}>
             <h3 className="card__title">
               {optimiseImplemented
                 ? optimiseMode === "physics_only"
-                  ? "Physics-only result"
-                  : "Optimisation result"
-                : "Optimisation could not run"}
+                  ? "Physics"
+                  : optimiseMode === "physics_plus_ann"
+                    ? "Physics + ANN"
+                    : "Result"
+                : "Could not run"}
             </h3>
-            <p className="card__body">{optimiseMessage}</p>
+            {optimiseImplemented ? null : <p className="card__body">{optimiseMessage}</p>}
             {optimiseImplemented && requestedCrestKv != null && predictedCrestKv != null ? (
               <p className="card__body">
-                Requested {requestedCrestKv.toFixed(1)} kV vs predicted loaded crest{" "}
-                {predictedCrestKv.toFixed(1)} kV
-                {confirmedSafe
-                  ? `. Safety: ${safetyLabel ?? "safe"}.`
-                  : `. Safety: ${safetyLabel ?? "unverified"} (not recommended).`}
+                Crest {requestedCrestKv.toFixed(1)} kV requested · {predictedCrestKv.toFixed(1)} kV predicted
               </p>
+            ) : null}
+            {confirmedSafe === false ? <p className="card__body">Not confirmed safe.</p> : null}
+            {form.impulseType === "switching" &&
+            (presentation === "closest_stocked_noncompliant" ||
+              presentation === "buildable_unconfirmed_noncompliant") ? (
+              <p className="card__body">Switching resistors cannot meet this window.</p>
             ) : null}
             {sequenceShots && sequenceShots.length > 0 ? (
               <ul className="card__body">
                 {sequenceShots.map((shot, index) => (
                   <li key={`${shot.waveform_kind}-${index}`}>
-                    {shot.level_fraction} × ref: requested {shot.requested_peak_kv.toFixed(1)} kV,
-                    predicted {shot.predicted_crest_kv ?? "—"} kV, {shot.constraint_status},{" "}
-                    {shot.safety_label}
+                    {shot.level_fraction}× · {shot.requested_peak_kv.toFixed(1)} kV requested ·{" "}
+                    {shot.predicted_crest_kv ?? "—"} kV · {shot.constraint_status} · {shot.safety_label}
                   </li>
                 ))}
               </ul>
+            ) : null}
+            {frontBuild || tailBuild ? (
+              <p className="card__body">
+                Front {frontBuild ?? "—"} · Tail {tailBuild ?? "—"}
+              </p>
+            ) : null}
+            {optimiseWarnings.some((item) => item.code.includes("SYNTHETIC")) ? (
+              <p className="card__body">Synthetic training replay.</p>
+            ) : null}
+            {optimiseWarnings.some(
+              (item) => item.code.includes("TAUTOLOGY") && /not applied/i.test(item.message),
+            ) ? (
+              <p className="card__body">Crest residual not added.</p>
+            ) : null}
+            {optimiseWarnings
+              .filter((item) =>
+                [
+                  "ANN_PREDICT_FAILED",
+                  "ANN_WAVEFORM_FIT_FAILED",
+                  "ANN_WAVEFORM_INCONSISTENT",
+                  "ANN_RESIDUAL_REJECTED",
+                ].includes(item.code),
+              )
+              .map((item) => (
+                <p key={item.code} className="card__body">
+                  {item.message}
+                </p>
+              ))}
+            {optimiseImplemented && waveform ? (
+              <WaveformChart
+                waveform={waveform}
+                requestedPeakKv={requestedCrestKv}
+                overlay={overlay}
+                corrected={correctedWaveform}
+                requested={requestedWaveform}
+                physicsFrontUs={physicsFrontUs}
+                physicsTailUs={physicsTailUs}
+                physicsCrestKv={predictedCrestKv}
+                correctedMetrics={correctedMetrics}
+                requestedFrontUs={result?.normalized?.target_front_time_us ?? null}
+                requestedTailUs={result?.normalized?.target_half_value_time_us ?? null}
+                impulseType={form.impulseType}
+              />
+            ) : null}
+            {optimiseImplemented && !waveform ? (
+              <p className="card__body">No waveform returned.</p>
             ) : null}
           </section>
         ) : null}
       </form>
 
       <div className="panel panel--results">
+        <AnnInferenceDiagram
+          impulseType={form.impulseType}
+          phase={annPhase}
+          report={annReport}
+          error={annError}
+        />
         {transportError ? (
           <section className="card card--error">
             <p>{transportError}</p>
@@ -399,12 +519,12 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
             <IssueList severity="notice" issues={result.notices} />
             <details className="disclosure disclosure--block">
               <summary>
-                Assumptions and provenance ({result.relevant_assumptions.length})
+                Assumptions ({result.relevant_assumptions.length})
               </summary>
               <AssumptionsPanel entries={result.relevant_assumptions} />
             </details>
             <details className="disclosure disclosure--block">
-              <summary>Implementation status</summary>
+              <summary>Status</summary>
               <ul className="capabilities">
                 {Object.entries(metadata.capabilities).map(([name, status]) => (
                   <li key={name} className={`capability capability--${status}`}>
@@ -416,7 +536,7 @@ export function OperatorView({ metadata, profile, onOpenAdmin }: OperatorViewPro
             </details>
           </>
         ) : (
-          <p className="loading">{validating ? "Validating\u2026" : "No result yet."}</p>
+          <p className="loading">{validating ? "Checking\u2026" : "No result yet."}</p>
         )}
       </div>
     </div>

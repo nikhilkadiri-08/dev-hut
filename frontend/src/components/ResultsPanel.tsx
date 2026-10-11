@@ -29,26 +29,25 @@ export function TargetSummary({ normalized }: { normalized: NormalizedRequest })
   const { front_time_window: front, half_value_time_window: tail } = normalized;
   return (
     <section className="card">
-      <h3 className="card__title">Target waveform and acceptance window</h3>
+      <h3 className="card__title">Target</h3>
       <p className="card__subtitle">
-        {normalized.standard_label} &middot; {normalized.impulse_designation}{" "}
-        {normalized.impulse_type} impulse, {normalized.polarity} polarity
+        {normalized.impulse_designation} · {normalized.polarity}
       </p>
       <dl className="metrics">
         <div className="metric">
-          <dt>Required peak</dt>
+          <dt>Crest</dt>
           <dd>{format(normalized.required_peak_kv)} kV</dd>
           <span className="metric__note">
-            &plusmn;{format(normalized.peak_relative_tolerance * 100)}% permitted
+            &plusmn;{format(normalized.peak_relative_tolerance * 100)}%
           </span>
         </div>
         <div className="metric">
-          <dt>Front time</dt>
+          <dt>Front</dt>
           <dd>
             {format(front.nominal)} {front.unit}
           </dd>
           <span className="metric__note">
-            accept {format(front.min)}&ndash;{format(front.max)} {front.unit}
+            {format(front.min)}&ndash;{format(front.max)} {front.unit}
             {front.provenance_status !== "supplied" ? (
               <em className={`tag tag--${front.provenance_status}`}>
                 {STATUS_LABEL[front.provenance_status]}
@@ -57,12 +56,12 @@ export function TargetSummary({ normalized }: { normalized: NormalizedRequest })
           </span>
         </div>
         <div className="metric">
-          <dt>Time to half-value</dt>
+          <dt>Tail</dt>
           <dd>
             {format(tail.nominal)} {tail.unit}
           </dd>
           <span className="metric__note">
-            accept {format(tail.min)}&ndash;{format(tail.max)} {tail.unit}
+            {format(tail.min)}&ndash;{format(tail.max)} {tail.unit}
             {tail.provenance_status !== "supplied" ? (
               <em className={`tag tag--${tail.provenance_status}`}>
                 {STATUS_LABEL[tail.provenance_status]}
@@ -71,10 +70,6 @@ export function TargetSummary({ normalized }: { normalized: NormalizedRequest })
           </span>
         </div>
       </dl>
-      <details className="disclosure">
-        <summary>How the front time is defined</summary>
-        <p>{normalized.front_time_definition}</p>
-      </details>
     </section>
   );
 }
@@ -83,11 +78,7 @@ export function CapacitySummary({ normalized }: { normalized: NormalizedRequest 
   const d = normalized.derived;
   return (
     <section className="card">
-      <h3 className="card__title">Generator capacity check</h3>
-      <p className="card__subtitle">
-        Capacity arithmetic reproduced from the supplied workbook (
-        {d.workbook_reference}). These are not waveform predictions.
-      </p>
+      <h3 className="card__title">Capacity</h3>
       <dl className="metrics">
         <div className="metric">
           <dt>Stages to use</dt>
@@ -103,17 +94,14 @@ export function CapacitySummary({ normalized }: { normalized: NormalizedRequest 
         <div className="metric">
           <dt>Generator capacitance</dt>
           <dd>{format(d.generator_capacitance_uf, 4)} &micro;F</dd>
-          <span className="metric__note">stage capacitors in series</span>
         </div>
         <div className="metric">
           <dt>Total load capacitance</dt>
           <dd>{format(d.total_load_capacitance_pf)} pF</dd>
-          <span className="metric__note">test object + divider + stray</span>
         </div>
         <div className="metric">
           <dt>Highest reachable peak</dt>
           <dd>{format(d.max_achievable_peak_kv)} kV</dd>
-          <span className="metric__note">all stages at rated voltage</span>
         </div>
       </dl>
     </section>
@@ -126,17 +114,13 @@ export function DomainPanel({ checks }: { checks: DomainCheck[] }) {
   return (
     <section className="card">
       <h3 className="card__title">
-        Machine-learning training domain
+        Training domain
         {outside > 0 ? (
           <span className="pill pill--warning">{outside} outside</span>
         ) : (
           <span className="pill pill--ok">all inside</span>
         )}
       </h3>
-      <p className="card__subtitle">
-        The residual model was fitted on synthetic data covering only these ranges.
-        Inputs outside them make its correction an extrapolation.
-      </p>
       <table className="table">
         <thead>
           <tr>
@@ -172,7 +156,7 @@ export function AssumptionsPanel({ entries }: { entries: AssumptionEntry[] }) {
   return (
     <section className="card">
       <h3 className="card__title">
-        Assumptions behind this result
+        Assumptions
         {unresolved.length > 0 ? (
           <span className="pill pill--warning">{unresolved.length} unverified</span>
         ) : null}
@@ -185,13 +169,6 @@ export function AssumptionsPanel({ entries }: { entries: AssumptionEntry[] }) {
               <em className={`tag tag--${entry.status}`}>{STATUS_LABEL[entry.status]}</em>
             </div>
             <p className="assumption__value">{entry.value}</p>
-            {entry.note ? <p className="assumption__note">{entry.note}</p> : null}
-            {entry.impact ? (
-              <p className="assumption__impact">
-                <span>Effect if wrong:</span> {entry.impact}
-              </p>
-            ) : null}
-            <p className="assumption__source">Source: {entry.locator}</p>
           </li>
         ))}
       </ul>

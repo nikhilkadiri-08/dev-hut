@@ -540,3 +540,170 @@ def test_optimise_infeasible_sequence_shot_is_reported():
     assert body["success"] is True
     assert body["sequence"]["all_confirmed_safe"] is False
     assert body["sequence"]["shots"][0]["confirmed_safe"] is False
+
+
+def _assert_record_rises_before_the_crest(wave: dict) -> None:
+    times = wave["time_us"]
+    volts = wave["voltage_kv"]
+    assert len(times) == len(volts) >= 50
+    crest = wave["metrics"]["crest_kv"]
+    assert volts[0] < 0.30 * crest
+    peak_index = max(range(len(volts)), key=lambda index: volts[index])
+    assert peak_index > 0
+    assert times[peak_index] > times[0]
+    assert any(volts[index] <= 0.5 * crest for index in range(peak_index, len(volts)))
+
+
+def test_switching_predict_returns_rise_crest_and_tail():
+    """A configured switching setup returns Tp, T2 and a curve that leaves zero."""
+    payload = {
+        **PREDICT_PAYLOAD,
+        "impulse_type": "switching",
+        "requested_peak_kv": 1025.0,
+        "stages": 15,
+        "charging_voltage_per_stage_kv": 100.0,
+        "front_resistance_per_stage_ohm": 2000.0,
+        "tail_resistance_per_stage_ohm": 800.0,
+    }
+    body = client.post("/api/physics/predict", json=payload).json()
+    assert body["success"] is True
+    pred = body["predictions"]
+    loaded = 15 * 100.0 * 0.82
+    assert pred["crest_kind"] == "loaded_estimate_N_Vstage_eta"
+    assert pred["crest_voltage_kv"] == pytest.approx(loaded)
+    assert pred["crest_voltage_kv"] != pytest.approx(1025.0)
+    assert pred["front_time_us"] > 0
+    assert pred["tail_time_us"] > pred["front_time_us"]
+    wave = pred["waveform"]
+    _assert_record_rises_before_the_crest(wave)
+    assert wave["metrics"]["front_time_us"] == pytest.approx(wave["metrics"]["peak_time_us"])
+    assert wave["metrics"]["tail_time_us"] > wave["metrics"]["peak_time_us"]
+    assert any(item["code"] == "SWITCHING_E18_IS_NOT_TP" for item in wave["warnings"])
+    assert body["mode"] == "physics_only"
+    assert body["predictions"]["corrected_waveform"] is None
+    assert body["metadata"]["residual_reason"] == "NO_RESIDUAL_MODEL"
+
+
+def test_switching_optimise_returns_closest_stocked_waveform_when_none_comply(isolated_profile):
+    """Stock front/tail reach cannot hit 250/2500 µs. The curve must still be returned."""
+    payload = {**WORKBOOK_PAYLOAD, "impulse_type": "switching", "required_peak_kv": 1025.0}
+    body = client.post("/api/optimise", json=payload).json()
+    assert body["success"] is True
+    assert body["recommended"] is None
+    assert body["metadata"]["presentation"] == "closest_stocked_noncompliant"
+    assert "not a recommendation" in body["detail"]
+    assert "no stocked combination meets" in body["detail"].lower()
+    candidate = body["candidate"]
+    assert candidate["confirmed_safe"] is False
+    assert candidate["presentation"] == "buildable_unconfirmed_noncompliant"
+    assert candidate["front_resistance_per_stage_ohm"] == pytest.approx(2000.0)
+    assert candidate["tail_resistance_per_stage_ohm"] == pytest.approx(800.0)
+    pred = body["predictions"]
+    assert pred["crest_kind"] == "loaded_estimate_N_Vstage_eta"
+    expected_crest = (
+        candidate["stages"] * candidate["charging_voltage_per_stage_kv"] * 0.82
+    )
+    assert pred["crest_voltage_kv"] == pytest.approx(expected_crest)
+    assert pred["front_time_us"] > 0
+    assert pred["tail_time_us"] > pred["front_time_us"]
+    _assert_record_rises_before_the_crest(pred["waveform"])
+    assert any(item["code"] == "NO_COMPLIANT_CANDIDATE" for item in body["warnings"])
+    assert "2000" in next(
+        item["message"] for item in body["warnings"] if item["code"] == "NO_COMPLIANT_CANDIDATE"
+    )
+
+    operator = {
+        "impulse_type": "switching",
+        "required_peak_kv": 1025.0,
+        "load_capacitance_pf": 850.0,
+        "divider_capacitance_pf": 500.0,
+        "stray_capacitance_pf": 150.0,
+    }
+    operator_body = client.post("/api/optimise", json=operator).json()
+    assert operator_body["success"] is True
+    assert operator_body["recommended"] is None
+    assert operator_body["predictions"]["waveform"]["time_us"]
+    assert operator_body["metadata"]["presentation"] == "closest_stocked_noncompliant"
+
+
+def test_lightning_and_switching_waveforms_are_not_the_same_series():
+    """Same capacitances. Switching Rf/Rt are larger, so Tp and T2 are much longer."""
+    common = {
+        "requested_peak_kv": 1025.0,
+        "stages": 9,
+        "charging_voltage_per_stage_kv": 150.0,
+        "load_capacitance_pf": 850.0,
+        "divider_capacitance_pf": 500.0,
+        "stray_capacitance_pf": 150.0,
+        "stray_inductance_uh": 18.5,
+        "expected_efficiency": 0.82,
+    }
+    lightning = client.post(
+        "/api/physics/predict",
+        json={
+            **common,
+            "impulse_type": "lightning",
+            "front_resistance_per_stage_ohm": 50.0,
+            "tail_resistance_per_stage_ohm": 25.0,
+        },
+    ).json()["predictions"]
+    switching = client.post(
+        "/api/physics/predict",
+        json={
+            **common,
+            "impulse_type": "switching",
+            "front_resistance_per_stage_ohm": 2000.0,
+            "tail_resistance_per_stage_ohm": 800.0,
+        },
+    ).json()["predictions"]
+    loaded = 9 * 150.0 * 0.82
+    assert lightning["crest_voltage_kv"] == pytest.approx(loaded)
+    assert switching["crest_voltage_kv"] == pytest.approx(loaded)
+    assert lightning["crest_voltage_kv"] != pytest.approx(1025.0)
+    assert switching["front_time_us"] > 10 * lightning["front_time_us"]
+    assert switching["tail_time_us"] > 10 * lightning["tail_time_us"]
+    lightning_wave = lightning["waveform"]
+    switching_wave = switching["waveform"]
+    assert switching_wave["metrics"]["peak_time_us"] > 10 * lightning_wave["metrics"]["peak_time_us"]
+    assert switching_wave["time_us"][-1] > 10 * lightning_wave["time_us"][-1]
+    assert switching_wave["time_us"] != lightning_wave["time_us"]
+    assert switching_wave["voltage_kv"] != lightning_wave["voltage_kv"]
+    assert lightning_wave["time_us"][-1] < 200
+    assert switching_wave["time_us"][-1] > 1000
+    _assert_record_rises_before_the_crest(lightning_wave)
+    _assert_record_rises_before_the_crest(switching_wave)
+
+
+def test_physics_predict_returns_sampled_waveform_from_loaded_crest():
+    body = client.post("/api/physics/predict", json=PREDICT_PAYLOAD).json()
+    wave = body["predictions"]["waveform"]
+    assert wave["model_kind"] == "reduced_order_double_exponential"
+    assert wave["model_kind"] != "full_circuit"
+    assert len(wave["time_s"]) == len(wave["voltage_v"]) >= 50
+    assert max(wave["voltage_v"]) == pytest.approx(
+        body["predictions"]["crest_voltage_kv"] * 1000.0, rel=2e-3
+    )
+    assert wave["metrics"]["crest_kv"] == pytest.approx(body["predictions"]["crest_voltage_kv"])
+    assert wave["consistency"]["ok"] is True
+    assert "laboratory" in wave["disclaimer"]
+
+
+def test_optimise_waveform_uses_the_same_prediction_as_the_candidate():
+    body = client.post("/api/optimise", json=WORKBOOK_PAYLOAD).json()
+    assert body["mode"] == "physics_only"
+    assert body["metadata"]["ml_model_used"] is False
+    wave = body["predictions"]["waveform"]
+    candidate = body["candidate"]
+    assert wave["metrics"]["crest_kv"] == pytest.approx(candidate["crest_voltage_kv"])
+    assert candidate["waveform"]["metrics"]["crest_kv"] == pytest.approx(wave["metrics"]["crest_kv"])
+    assert max(wave["voltage_v"]) == pytest.approx(wave["metrics"]["crest_v"], rel=2e-3)
+
+
+def test_invalid_predict_returns_422_without_a_curve():
+    payload = {k: v for k, v in PREDICT_PAYLOAD.items() if k != "expected_efficiency"}
+    response = client.post("/api/physics/predict", json=payload)
+    assert response.status_code == 422
+    body = response.json()
+    assert body.get("ok") is False or body.get("success") is False
+    assert "waveform" not in body
+    assert "predictions" not in body or "waveform" not in (body.get("predictions") or {})

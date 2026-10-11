@@ -159,8 +159,10 @@ from physics_model.validation import (
     validate_configuration,
 )
 from physics_model.waveform import (
+    MODEL_KIND,
     ChoppedLightning,
     DoubleExponential,
+    RealizedWaveform,
     WaveformParameters,
     build_chopped_lightning,
     extract_front_time,
@@ -168,6 +170,9 @@ from physics_model.waveform import (
     extract_tail_time,
     extract_time_to_peak,
     fit_double_exponential,
+    realize_impulse,
+    realize_from_targets,
+    serialize_realized_waveform,
 )
 
 __all__ = [
@@ -229,6 +234,11 @@ __all__ = [
     "extract_tail_time",
     "extract_peak",
     "build_chopped_lightning",
+    "MODEL_KIND",
+    "RealizedWaveform",
+    "realize_impulse",
+    "realize_from_targets",
+    "serialize_realized_waveform",
     # stress
     "CheckStatus",
     "StressCheck",

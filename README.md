@@ -21,21 +21,21 @@ qualified engineer under the laboratory's approved test procedure.
 | Physics model (`physics_model/`) | implemented |
 | Configuration optimiser (`physics_model/optimiser.py`) | implemented |
 | Capacitor stress and safety checks | implemented, limited by missing ratings |
-| Waveform reconstruction | implemented, preliminary and labelled as such |
-| ML handoff contract (`physics_model/ml_interface.py`) | implemented, no model trained |
-| Residual ML model | not started (optional; kNN is spreadsheet documentation only) |
+| Waveform reconstruction | implemented as `reduced_order_double_exponential` V(t), not a full Marx ODE |
+| ML handoff contract (`physics_model/ml_interface.py`) | implemented; ANN residual consumes this handoff |
+| Residual ML model | ANN residual corrector (`physics_model/ann_model.py`); kNN is a Hidden-Test comparison only |
 | Configurable test sequences | implemented, user-configured; IEC clauses unresolved |
 | Chopped lightning reconstruction | preliminary assumed collapse, not a circuit chop |
 | Wiring the physics model into `POST /api/optimise` | implemented, physics-only until a residual artifact is injected |
 | Measured waveform import | not started |
 | Open-literature reference catalogue | implemented |
 
-`POST /api/optimise` runs the existing `physics_model.optimiser`. It is labelled
-`physics_only` unless a residual-model object has been injected at process start.
-No model is trained or downloaded with the application. A candidate is
-`recommended` only when every applicable hard safety check is evaluable and
-passing; otherwise the best buildable point is returned as `best_unconfirmed`
-and is never labelled safe.
+`POST /api/optimise` searches the stocked resistor inventory, builds a physics
+waveform, then applies the ANN residual artifact when it is loaded and the point
+is inside the synthetic Train domain. Mode is `physics_plus_ann` only when those
+residuals are actually applied; otherwise it stays `physics_only`. kNN is never
+used by the API. A candidate is `recommended` only when every applicable hard
+safety check is evaluable and passing; the ANN cannot override equipment limits.
 
 ## The physics model
 
@@ -193,12 +193,48 @@ Tests:
 ```bash
 cd /Users/nikhilkadiri/dev-hut-1
 .venv/bin/python -m pytest -q
+export PATH="$HOME/.local/node/bin:$PATH" && cd frontend && npx tsc --noEmit
 ```
 
 `POST /api/physics/predict` and `POST /api/optimise` call `physics_model` functions.
 They do not re-implement the workbook equations. Laboratory units stay on the
 wire (`kV`, `pF`, `uF`, `uH`, `ohm`, `us`); conversion to SI happens in
 `backend/units.py`.
+
+Sampled V(t) is a double exponential fitted so its peak equals the loaded crest
+`N × V_stage × η` and its extracted times match workbook E18/E19 (labelled
+approximations). After an active timing residual, the curve is rebuilt from the
+corrected front/tail scalars and that same loaded crest. The crest head is not
+applied, so the curve is not shifted off the loaded crest. `model_kind` is
+`reduced_order_double_exponential`. That is not a full-circuit Marx transient,
+not a learned transient, and not a measured laboratory waveform.
+
+Train the ANN (synthetic Train split only; Validation selects the network;
+Hidden Test is scored once after that):
+
+```bash
+cd /Users/nikhilkadiri/dev-hut-1
+.venv/bin/python -m physics_model.ann_train
+```
+
+`sklearn` does not import in `.venv` (Python 3.14), so the product model is a
+NumPy MLP in `physics_model/ann_model.py`, one network per output and per
+impulse type. The ANN training tab replays the saved per-epoch loss and MAE.
+That curve is synthetic telemetry, not laboratory validation. A head is applied only when its validation MAE is strictly better
+than a zero residual, and only if that win still holds on the one-shot hidden
+test. Otherwise that output stays physics-only.
+
+`Physics_Crest_kV` equals `Test_kV` in `data/synthetic_dataset.csv` (workbook E20
+tautology). The crest head is trained as a diagnostic of that scatter and is
+not applied: the optimiser already sets the loaded crest to the request, and
+adding the residual would move the displayed crest off the request.
+`data/literature/open_references.json` is not a measured training table. No
+compatible open measured rows are in the repo. Synthetic MAE/RMSE is not
+laboratory accuracy.
+
+Pipeline order: inventory-constrained optimiser → physics waveform → ANN residuals
+when in-domain → corrected waveform → metric extraction → quality windows.
+Safety/`confirmed_safe` stays on evaluable equipment checks.
 
 ### API
 
@@ -210,8 +246,8 @@ wire (`kV`, `pF`, `uF`, `uH`, `ohm`, `us`); conversion to SI happens in
 | POST | `/api/test-request/validate` | Operator request + stored profile. |
 | GET/PUT/POST | `/api/admin/profile` | Save / read / reset generator setup. |
 | GET | `/api/generator/profile` | Same stored profile plus assumed/unknown provenance. Does not invent ratings. |
-| POST | `/api/physics/predict` | One configuration through `physics_model.calculations.predict`. |
-| POST | `/api/optimise` | Validate → physics → optional residual hook → optimiser → safety gate. |
+| POST | `/api/physics/predict` | Physics V(t) plus ANN-corrected V(t) when the artifact is loaded and in-domain. |
+| POST | `/api/optimise` | Inventory search → physics waveform → ANN residuals when in-domain → corrected waveform. |
 
 Predict and optimise success bodies use `success`, `mode`, `predictions`, `units`,
 `warnings`, and `metadata` (`physics_model_used`, `ml_model_used`). Crest is the
@@ -223,20 +259,36 @@ the rest of the API where practical; optimise also returns
 `{success: false, error: {code, message, details}}`). HTTP 500 is a structured
 `PHYSICS_ERROR` with no stack trace. Nothing here operates hardware.
 
-### Plugging in a residual ML artifact later
+### Residual ANN artifact
 
-Do not use the workbook kNN. Implement an object with
-`predict_residuals(handoff) -> ResidualCorrection` and call
-`backend.ml_runtime.set_residual_model(instance)` when the process starts.
-If nothing is set, optimise stays `physics_only` with `ml_model_used: false`.
+`backend/ml_runtime.py` loads `physics_model/artifacts/ann_residual.npz` at
+startup only when `ann_residual.meta.json` is version `ann_residual_v2` and the
+weight hash matches. A stale artifact stays unloaded and the API stays
+physics-only. Feature order is impulse type (0/1 switching), Test_kV,
+load/divider/stray C, L, efficiency, Front_R_Stage, Tail_R_Stage, and the
+physics baselines (E18, E19, E20 echo). No waveform-sample features. No polarity.
+Observed and residual columns are not inputs.
+
+Lightning and switching each have their own front, tail, and crest networks,
+because those residual scales differ by about two orders of magnitude. Inactive
+heads contribute 0. Mode is `physics_plus_ann` only when at least one timing
+head is actually applied for that impulse; otherwise `physics_only` with a
+reason. The crest head is not applied.
+
+Weighted kNN (k=7, workbook distance) exists only as `benchmark_weighted_knn` for
+the validation and hidden-test comparison. `/api/optimise` does not call it.
+
+If the artifact is missing, stale, out of domain, or produces a non-finite /
+absurd residual, the API stays `physics_only` and says so. Scores in the
+metadata are synthetic, not laboratory results.
 
 ### Supported waveforms
 
 | Kind | Timing used by the extractor | Workbook scalar | Status |
 | --- | --- | --- | --- |
-| Lightning full wave | T1 = 1.67×(t90−t30), T2 from virtual origin | E18 / E19 | reconstruction of workbook scalars |
-| Switching | time-to-peak Tp | E18 still uses 1.67 | conflict documented, E18 not replaced |
-| Chopped lightning | pre-chop lightning reconstruction + assumed collapse | E18 / E19 for the pre-chop | preliminary; collapse is configured, not measured |
+| Lightning full wave | T1 = 1.67×(t90−t30), T2 from virtual origin | E18 / E19 | sampled reconstruction; peak = loaded crest |
+| Switching | extracted time is Tp, not 30/90 | E18 still uses 1.67 | conflict documented, E18 not replaced |
+| Chopped lightning | pre-chop reconstruction + labelled collapse | E18 / E19 for the pre-chop | missing crossings are unavailable, not passed |
 
 A 50% *voltage level* is a fraction of the reference test voltage. It is not the
 50% tail crossing that defines T2.

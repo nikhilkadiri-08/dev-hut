@@ -422,6 +422,42 @@ class PhysicsApiMetadata(BaseModel):
     ml_model_used: bool = False
 
 
+class WaveformMetricsOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    crest_v: float
+    crest_kv: float
+    peak_time_s: float
+    peak_time_us: float
+    front_time_s: Optional[float] = None
+    front_time_us: Optional[float] = None
+    tail_time_s: Optional[float] = None
+    tail_time_us: Optional[float] = None
+    unavailable: list[str] = Field(default_factory=list)
+
+
+class WaveformOut(BaseModel):
+    """Reduced-order sampled V(t). Not a full-circuit Marx solution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_kind: Literal["reduced_order_double_exponential"]
+    model_id: str
+    time_s: list[float]
+    voltage_v: list[float]
+    time_us: list[float]
+    voltage_kv: list[float]
+    resolution: dict
+    units: dict
+    assumptions: list[str]
+    metrics: WaveformMetricsOut
+    thresholds: dict
+    consistency: dict
+    chopped: bool
+    disclaimer: str
+    warnings: list[dict] = Field(default_factory=list)
+
+
 def merge_operator_request(
     operator: OperatorRequestIn, profile: GeneratorProfile
 ) -> TestRequestIn:

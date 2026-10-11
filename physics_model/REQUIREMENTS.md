@@ -17,12 +17,12 @@ internal consistency. They are not laboratory validation.
 | Capacitor / resistor stress | partial | Evaluable only when ratings are supplied. |
 | Intra-stage topology | partial | Unspecified → per-capacitor checks UNKNOWN. |
 | Modelling C energy (3 µF → 60 kJ/stage at 200 kV) | implemented+tested | Conflict with an unsourced 2.5 kJ / 0.125 µF figure is recorded, not resolved. |
-| Residual ML | missing | Hook only. kNN documents the spreadsheet. No weights. |
+| Residual ML | implemented+tested | NumPy MLP, synthetic Train only. Timing heads ship only when validation and the one-shot hidden test beat a zero residual. Crest head is diagnostic and is not applied. Not laboratory accuracy. |
 | Measured waveforms | missing | No CPRI data in the repo. |
 | IEC edition / chopped clauses | blocked | No standard PDF in the repository. |
 | Marx topology / transient solve | blocked | Topology not specified. |
 | Hardware control | missing (intentional) | Decision support only. |
-| `POST /api/optimise` physics-only | implemented+tested | Labelled `physics_only` when no model is loaded. |
+| `POST /api/optimise` | implemented+tested | `physics_only` when no timing head is applied. `physics_plus_ann` only when one is. |
 | Sequence on predict/optimise | implemented+tested | Optional body field. Single-config body still works. |
 
 The problem-statement PDF and the source workbook are referenced by name; they are

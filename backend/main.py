@@ -7,7 +7,7 @@ No hardware control. A residual ML model is optional and is not loaded by defaul
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from starlette.requests import Request
 
 from backend import config, store
-from backend.ml_runtime import get_residual_model
+from backend.ml_runtime import get_residual_model, load_default_residual_model, load_status
 from backend.pipeline import (
     PipelineError,
     optimise_from_request,
@@ -44,6 +44,11 @@ app = FastAPI(
         "equipment and does not replace approved test procedures."
     ),
 )
+
+@app.on_event("startup")
+def _load_ann_residual_model() -> None:
+    load_default_residual_model()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -114,7 +119,7 @@ def health() -> dict:
         "version": app.version,
         "physics_model": physics,
         "ml_model": {
-            "loaded": get_residual_model() is not None,
+            **load_status(),
             "used_by_default": False,
         },
     }
@@ -205,6 +210,143 @@ def literature_lookup(q: str = Query(..., min_length=1, max_length=200)) -> dict
     from physics_model.literature import lookup
 
     return lookup(q).to_dict()
+
+
+def _parse_optimise_body(raw: object) -> TestRequestIn:
+    if not isinstance(raw, dict):
+        raise RequestValidationError(
+            [
+                {
+                    "type": "dict_type",
+                    "loc": ("body",),
+                    "msg": "Request body must be a JSON object.",
+                    "input": raw,
+                }
+            ]
+        )
+    try:
+        if "circuit" in raw:
+            return TestRequestIn.model_validate(raw)
+        operator = OperatorRequestIn.model_validate(raw)
+        return merge_operator_request(operator, store.load_profile().profile)
+    except ValidationError as exc:
+        _reraise_schema_error(exc)
+        raise AssertionError("schema error should have been reraised") from exc
+
+
+@app.get("/api/ml/status")
+def ml_status(impulse: str = Query(default="lightning")) -> dict:
+    """Architecture of the saved ANN. Weights are the learned ones, normalized for drawing.
+
+    This does not run inference and does not retrain.
+    """
+    from physics_model.ann_model import (
+        ARCHITECTURE_DISCREPANCY,
+        REFERENCE_ARCHITECTURE,
+        AnnResidualModel,
+    )
+
+    names = {"lightning": "Lightning", "switching": "Switching"}
+    if impulse not in names:
+        raise HTTPException(
+            status_code=422,
+            detail="impulse must be lightning or switching.",
+        )
+    model = get_residual_model()
+    status = load_status()
+    payload = {
+        "status": "unavailable",
+        "available": False,
+        "synthetic_only": True,
+        "laboratory_validated": False,
+        "architecture_matches_reference": False,
+        "reference": REFERENCE_ARCHITECTURE,
+        "discrepancy": ARCHITECTURE_DISCREPANCY,
+        "detail": status.get("detail"),
+        "diagram": None,
+        "active_heads": status.get("active_heads"),
+    }
+    if not isinstance(model, AnnResidualModel):
+        return payload
+    payload["status"] = "ready"
+    payload["available"] = True
+    payload["diagram"] = model.diagram(names[impulse])
+    payload["active_heads"] = model.active_summary()
+    return payload
+
+
+@app.post("/api/ml/residuals")
+async def ml_residuals(request: Request) -> JSONResponse:
+    """Run the saved ANN on the configuration the optimiser would select.
+
+    Accepts the same body as ``POST /api/optimise``. Does not retrain.
+    """
+    try:
+        raw = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=422,
+            content=ValidationResponse(
+                ok=False,
+                errors=[
+                    IssueOut(
+                        severity="error",
+                        code="SCHEMA_JSON",
+                        message="Request body must be JSON.",
+                    )
+                ],
+            ).model_dump(),
+        )
+    try:
+        body = _parse_optimise_body(raw)
+    except RequestValidationError:
+        raise
+    try:
+        payload = optimise_from_request(body)
+    except PipelineError as exc:
+        return _pipeline_error_response(exc)
+    except Exception:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "available": get_residual_model() is not None,
+                "residuals": None,
+                "message": "The residual request failed. No prediction was invented.",
+                "synthetic_only": True,
+                "laboratory_validated": False,
+            },
+        )
+    inference = payload.get("ann_inference")
+    if not isinstance(inference, dict):
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "residuals": None,
+                "message": "The residual request did not return an inference record.",
+                "synthetic_only": True,
+                "laboratory_validated": False,
+            },
+        )
+    return JSONResponse(status_code=200, content=inference)
+
+
+@app.get("/api/ann/training")
+def ann_training_history() -> dict:
+    """Synthetic ANN training telemetry: architecture and per-epoch loss.
+
+    This is not laboratory validation. Hidden Test is not a curve in this payload.
+    """
+    from physics_model.ann_model import load_training_history
+
+    try:
+        return load_training_history()
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="ANN training history has not been written.",
+        ) from exc
 
 
 def _profile_response(stored) -> ProfileResponse:

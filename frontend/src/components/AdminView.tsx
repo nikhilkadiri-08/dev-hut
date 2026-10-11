@@ -74,25 +74,10 @@ export function AdminView({ metadata, profile, onProfileChange }: AdminViewProps
   return (
     <div className="layout">
       <form className="panel" onSubmit={(event) => event.preventDefault()}>
-        <section className="card card--caution">
-          <h3 className="card__title">Not a security boundary</h3>
-          <p className="card__body">
-            This interface is separated from the test-request interface so that
-            equipment configuration is entered once by whoever maintains the generator.
-            There is no authentication: anyone who can open the application can change
-            these values. Treat it as a workflow split, not access control.
-          </p>
-        </section>
-
         <fieldset className="group">
-          <legend className="group__legend">Generator ratings</legend>
+          <legend className="group__legend">Ratings</legend>
           <p className="group__note">
-            Physical properties of the equipment. The application refuses values above
-            the ratings recorded in the supplied material (
-            {metadata.generator.max_stages} stages,{" "}
-            {metadata.generator.max_stage_voltage_kv} kV per stage), because charging a
-            stage beyond its rating is a damage and safety risk rather than a
-            configuration choice.
+            Limit {metadata.generator.max_stages} stages · {metadata.generator.max_stage_voltage_kv} kV
           </p>
           <div className="grid-2">
             <NumberField
@@ -132,17 +117,12 @@ export function AdminView({ metadata, profile, onProfileChange }: AdminViewProps
               onChange={update("capacitorsPerStage")}
               path="profile.capacitors_per_stage"
               issues={issues}
-              hint="Recorded only; no calculation uses it yet."
             />
           </div>
         </fieldset>
 
         <fieldset className="group">
-          <legend className="group__legend">Laboratory defaults</legend>
-          <p className="group__note">
-            Starting values the test-request interface inherits. An operator can
-            override either one per test.
-          </p>
+          <legend className="group__legend">Defaults</legend>
           <div className="grid-2">
             <NumberField
               label="Stray inductance"
@@ -154,7 +134,7 @@ export function AdminView({ metadata, profile, onProfileChange }: AdminViewProps
               issues={issues}
             />
             <NumberField
-              label="Voltage efficiency"
+              label="Efficiency"
               unit="fraction"
               value={form.defaultEfficiency}
               onChange={update("defaultEfficiency")}
@@ -166,11 +146,7 @@ export function AdminView({ metadata, profile, onProfileChange }: AdminViewProps
         </fieldset>
 
         <fieldset className="group">
-          <legend className="group__legend">Resistor store</legend>
-          <p className="group__note">
-            The values physically available, with how many units of each can be put in
-            series on one stage.
-          </p>
+          <legend className="group__legend">Resistors</legend>
           <ResistorTable
             legend="Front resistors"
             rows={form.frontResistors}
@@ -189,17 +165,16 @@ export function AdminView({ metadata, profile, onProfileChange }: AdminViewProps
           />
           <TextField
             label="External front resistors"
-            unit="&#8486;, comma separated"
+            unit="&#8486;"
             value={form.externalFrontOhms}
             onChange={update("externalFrontOhms")}
-            placeholder="e.g. 10000, 12000"
+            placeholder="10000, 12000"
             path="profile.external_front_ohms"
             issues={issues}
-            hint="Needed for switching impulses. No values were supplied with the project material."
           />
           <TextField
             label="External tail resistors"
-            unit="&#8486;, comma separated"
+            unit="&#8486;"
             value={form.externalTailOhms}
             onChange={update("externalTailOhms")}
             placeholder="e.g. 1200"
@@ -214,7 +189,7 @@ export function AdminView({ metadata, profile, onProfileChange }: AdminViewProps
             label="Changed by"
             value={form.updatedBy}
             onChange={update("updatedBy")}
-            placeholder="name or initials, for traceability"
+            placeholder="name"
           />
           <div className="actions actions--row">
             <button
@@ -223,7 +198,7 @@ export function AdminView({ metadata, profile, onProfileChange }: AdminViewProps
               onClick={onSave}
               disabled={busy || !dirty}
             >
-              {busy ? "Saving\u2026" : "Save setup"}
+              {busy ? "Saving\u2026" : "Save"}
             </button>
             <button
               type="button"
@@ -231,15 +206,11 @@ export function AdminView({ metadata, profile, onProfileChange }: AdminViewProps
               onClick={onReset}
               disabled={busy || profile.stored.is_factory_default}
             >
-              Restore supplied values
+              Restore defaults
             </button>
           </div>
           <p className="actions__note">
-            {dirty
-              ? "Unsaved changes. Test requests still use the saved setup until you save."
-              : savedAt
-                ? `Saved at ${new Date(savedAt).toLocaleString()}.`
-                : "No unsaved changes."}
+            {dirty ? "Unsaved changes." : savedAt ? "Saved." : "No unsaved changes."}
           </p>
         </fieldset>
       </form>
@@ -262,17 +233,13 @@ export function AdminView({ metadata, profile, onProfileChange }: AdminViewProps
           </h3>
           <p className="card__subtitle">
             {profile.stored.is_factory_default
-              ? "Nothing has been saved yet, so the values taken from the supplied problem statement and workbook are in use. Confirm them against the actual equipment."
-              : `Last changed by ${profile.stored.updated_by} at ${
-                  profile.stored.updated_at
-                    ? new Date(profile.stored.updated_at).toLocaleString()
-                    : "an unknown time"
-                }.`}
+              ? "Supplied defaults."
+              : `Changed by ${profile.stored.updated_by}.`}
           </p>
           {reach ? (
             <dl className="metrics">
               <div className="metric">
-                <dt>Highest reachable peak</dt>
+                <dt>Max crest</dt>
                 <dd>{reach.max_achievable_peak_kv.toLocaleString(undefined, { maximumFractionDigits: 0 })} kV</dd>
                 <span className="metric__note">
                   at {(result.stored.profile.default_efficiency * 100).toFixed(0)}%
@@ -282,21 +249,17 @@ export function AdminView({ metadata, profile, onProfileChange }: AdminViewProps
               <div className="metric">
                 <dt>Total charge voltage</dt>
                 <dd>{reach.max_charge_voltage_kv.toLocaleString()} kV</dd>
-                <span className="metric__note">all stages at rated voltage</span>
+                <span className="metric__note">all stages</span>
               </div>
               <div className="metric">
-                <dt>Front resistance reach</dt>
+                <dt>Front</dt>
                 <dd>{reach.max_front_ohms_per_stage.toLocaleString()} &#8486;</dd>
-                <span className="metric__note">
-                  per stage, from {reach.front_values} stocked values
-                </span>
+                <span className="metric__note">{reach.front_values} values</span>
               </div>
               <div className="metric">
-                <dt>Tail resistance reach</dt>
+                <dt>Tail</dt>
                 <dd>{reach.max_tail_ohms_per_stage.toLocaleString()} &#8486;</dd>
-                <span className="metric__note">
-                  per stage, from {reach.tail_values} stocked values
-                </span>
+                <span className="metric__note">{reach.tail_values} values</span>
               </div>
             </dl>
           ) : null}

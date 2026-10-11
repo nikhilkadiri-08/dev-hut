@@ -88,7 +88,7 @@ export function ResistorTable({
       </table>
 
       <button type="button" className="button button--ghost" onClick={add}>
-        Add a resistor value
+        Add resistor
       </button>
 
       {own

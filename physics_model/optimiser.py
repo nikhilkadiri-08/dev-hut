@@ -577,12 +577,29 @@ def optimise(request: OptimisationRequest) -> OptimisationResult:
                 Severity.WARNING,
             )
         )
+    elif result.recommended is None and result.best is not None:
+        best = result.best
+        caveats.append(
+            Caveat(
+                "NO_COMPLIANT_CANDIDATE",
+                "No stocked combination meets the acceptance window. "
+                f"Closest stocked setup is {best.stages} stages at "
+                f"{v_to_kv(best.configuration.charging_voltage_per_stage_v):.4g} kV/stage, "
+                f"front {best.configuration.front_resistance_per_stage_ohm:g} ohm/stage, "
+                f"tail {best.configuration.tail_resistance_per_stage_ohm:g} ohm/stage "
+                f"(workbook front/peak {best.prediction.front_time_us:.4g} us, "
+                f"tail {best.prediction.tail_time_us:.4g} us, "
+                f"loaded crest {best.prediction.crest_voltage_kv:.4g} kV). "
+                "It is not recommended. Missing resistors were not invented.",
+                Severity.WARNING,
+            )
+        )
     elif result.recommended is None:
         caveats.append(
             Caveat(
                 "NO_COMPLIANT_CANDIDATE",
-                "No catalogue combination is both confirmed-safe (or even "
-                "buildable) and IEC-compliant under the workbook equations.",
+                "No catalogue combination is both buildable and compliant "
+                "under the workbook equations.",
                 Severity.WARNING,
             )
         )
@@ -657,7 +674,9 @@ def optimise_sequence(
             weights=base.weights,
         )
         result = optimise(request)
-        chosen = result.recommended or result.best_unconfirmed
+        # A non-compliant closest stocked setup is still evaluated so the shot
+        # has a crest. It is never treated as recommended or confirmed safe.
+        chosen = result.recommended or result.best_unconfirmed or result.best
         evaluation = None
         if chosen is not None:
             evaluation = evaluate_shot(

@@ -22,11 +22,10 @@ Three things it is explicitly not:
   the Marx network was performed, because the supplied material does not define
   the network in enough detail to do so.
 * It is not a measured or validated CPRI waveform. No measured data was supplied.
-* Its peak is not a prediction. The peak is an *input*. Callers may pass the
-  preliminary loaded estimate ``N*V_stage*eta`` from
-  :func:`physics_model.calculations.loaded_crest_estimate`, or the request.
-  Workbook E20 is the request echoed back and is not a crest model. A
-  reconstruction cannot invent a circuit solution the source lacked.
+* Its peak is not a circuit prediction. ``realize_impulse`` sets the peak to the
+  loaded estimate ``N*V_stage*eta``. Workbook E20 is the request echoed back
+  and is not a crest model. A reconstruction cannot invent a circuit solution
+  the source lacked.
 
 Timing definitions used here are from IEC 60060-1 and are supported by the
 workbook: the 1.67 factor in ``E18`` is the 30%/90% front-time convention, which
@@ -44,6 +43,7 @@ from backend.units import s_to_us
 from physics_model.calculations import (
     FRONT_TIME_DEFINITION_FACTOR,
     Caveat,
+    PhysicsPrediction,
     Severity,
 )
 from physics_model.inputs import ImpulseType
@@ -59,7 +59,15 @@ __all__ = [
     "extract_tail_time",
     "extract_peak",
     "build_chopped_lightning",
+    "RealizedWaveform",
+    "MODEL_KIND",
+    "realize_impulse",
+    "realize_from_targets",
+    "serialize_realized_waveform",
 ]
+
+MODEL_KIND = "reduced_order_double_exponential"
+_CONSISTENCY_REL = 2e-3
 
 #: Guard against this module ever being mistaken for ported workbook content.
 IS_WORKBOOK_OUTPUT = False
@@ -346,8 +354,9 @@ def fit_double_exponential(
         ),
         Caveat(
             "WAVEFORM_PEAK_IS_AN_INPUT",
-            "The peak of this curve was supplied, not predicted. The workbook has "
-            "no crest-voltage model, so the reconstruction cannot estimate one.",
+            "The peak of this curve was supplied, not predicted. Callers of "
+            "realize_impulse pass the loaded estimate N*V_stage*eta. The "
+            "workbook has no crest-voltage model (E20 is the request echoed).",
             Severity.WARNING,
         ),
     ]
@@ -477,3 +486,410 @@ def build_chopped_lightning(
         collapse_shape=collapse_shape,
         caveats=caveats,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Sampled V(t) for the API and chart
+# --------------------------------------------------------------------------- #
+
+
+def _interpolated_crossing(
+    time_s: np.ndarray, voltage_v: np.ndarray, level_v: float, *, rising: bool
+) -> float | None:
+    """Linear interpolation between the first pair of samples that brackets ``level_v``."""
+    if rising:
+        for i in range(1, len(voltage_v)):
+            lo, hi = voltage_v[i - 1], voltage_v[i]
+            if lo < level_v <= hi:
+                span = hi - lo
+                if span == 0.0:
+                    return float(time_s[i])
+                frac = (level_v - lo) / span
+                return float(time_s[i - 1] + frac * (time_s[i] - time_s[i - 1]))
+        return None
+    peak_i = int(np.argmax(voltage_v))
+    for i in range(peak_i + 1, len(voltage_v)):
+        lo, hi = voltage_v[i], voltage_v[i - 1]
+        if lo <= level_v < hi:
+            span = hi - lo
+            if span == 0.0:
+                return float(time_s[i])
+            frac = (hi - level_v) / span
+            return float(time_s[i - 1] + frac * (time_s[i] - time_s[i - 1]))
+    return None
+
+
+def _downsample(
+    time_s: np.ndarray,
+    voltage_v: np.ndarray,
+    max_points: int,
+    keep_times_s: tuple[float, ...] = (),
+) -> tuple[np.ndarray, np.ndarray]:
+    keep = [0, int(np.argmax(voltage_v)), len(time_s) - 1]
+    for t_keep in keep_times_s:
+        keep.append(int(np.argmin(np.abs(time_s - t_keep))))
+    if len(time_s) <= max_points:
+        return time_s, voltage_v
+    index = np.unique(
+        np.concatenate(
+            [np.linspace(0, len(time_s) - 1, max_points).astype(int), np.array(keep, dtype=int)]
+        )
+    )
+    return time_s[index], voltage_v[index]
+
+
+def _inject_times(
+    time_s: np.ndarray,
+    voltage_v: np.ndarray,
+    extra_times_s: list[float],
+    voltage_at,
+) -> tuple[np.ndarray, np.ndarray]:
+    extras_t = [t for t in extra_times_s if t is not None and t >= 0.0]
+    if not extras_t:
+        return time_s, voltage_v
+    extras_v = [float(voltage_at(float(t))) for t in extras_t]
+    merged_t = np.concatenate([time_s, np.asarray(extras_t, dtype=float)])
+    merged_v = np.concatenate([voltage_v, np.asarray(extras_v, dtype=float)])
+    order = np.argsort(merged_t, kind="stable")
+    return merged_t[order], merged_v[order]
+
+
+def _rel_err(actual: float, expected: float) -> float:
+    if expected == 0.0:
+        return abs(actual)
+    return abs(actual - expected) / abs(expected)
+
+
+@dataclass
+class RealizedWaveform:
+    """Sampled reduced-order V(t). Not a full-circuit Marx solution."""
+
+    time_s: np.ndarray
+    voltage_v: np.ndarray
+    model_kind: str
+    model_id: str
+    crest_v: float
+    peak_time_s: float
+    front_time_s: float | None
+    tail_time_s: float | None
+    workbook_front_time_s: float
+    workbook_tail_time_s: float
+    t30_s: float | None
+    t90_s: float | None
+    t50_s: float | None
+    virtual_origin_s: float | None
+    unavailable: tuple[str, ...]
+    consistency_ok: bool
+    consistency: dict[str, float | bool | str]
+    caveats: list[Caveat]
+    chopped: bool
+    impulse_type: ImpulseType
+
+
+def realize_from_targets(
+    front_time_s: float,
+    tail_time_s: float,
+    crest_v: float,
+    impulse_type: ImpulseType,
+    *,
+    chopping_time_s: float | None = None,
+    collapse_duration_s: float | None = None,
+    collapse_shape: str | None = None,
+    sample_points: int = 4000,
+    api_points: int = 640,
+    model_id: str = "double_exp_e18_e19_loaded_crest",
+    peak_caveat_code: str = "WAVEFORM_PEAK_IS_LOADED_CREST",
+    peak_caveat_message: str | None = None,
+) -> RealizedWaveform:
+    """Fit a double exponential to supplied scalars and sample V(t).
+
+    ``crest_v`` is the intended peak. Callers pass the loaded estimate or a
+    residual-corrected crest. This is not a full-circuit transient.
+    """
+    from types import SimpleNamespace
+
+    prediction = SimpleNamespace(
+        front_time_s=front_time_s,
+        tail_time_s=tail_time_s,
+        crest_voltage_v=crest_v,
+        configuration=SimpleNamespace(impulse_type=impulse_type),
+    )
+    return realize_impulse(
+        prediction,  # type: ignore[arg-type]
+        chopping_time_s=chopping_time_s,
+        collapse_duration_s=collapse_duration_s,
+        collapse_shape=collapse_shape,
+        sample_points=sample_points,
+        api_points=api_points,
+        model_id=model_id,
+        peak_caveat_code=peak_caveat_code,
+        peak_caveat_message=peak_caveat_message,
+    )
+
+
+def realize_impulse(
+    prediction: PhysicsPrediction,
+    *,
+    chopping_time_s: float | None = None,
+    collapse_duration_s: float | None = None,
+    collapse_shape: str | None = None,
+    sample_points: int = 4000,
+    api_points: int = 640,
+    model_id: str = "double_exp_e18_e19_loaded_crest",
+    peak_caveat_code: str = "WAVEFORM_PEAK_IS_LOADED_CREST",
+    peak_caveat_message: str | None = None,
+) -> RealizedWaveform:
+    """Fit E18/E19 scalars onto a double exponential whose peak is the loaded crest.
+
+    Samples are drawn from that shape. Metrics are extracted from the same
+    analytical crossings the samples come from, then checked against ``max(v)``.
+    """
+    if not math.isfinite(prediction.crest_voltage_v) or prediction.crest_voltage_v <= 0.0:
+        raise ValueError("crest must be a positive finite voltage")
+    if not math.isfinite(prediction.front_time_s) or not math.isfinite(prediction.tail_time_s):
+        raise ValueError("front and tail times must be finite")
+
+    impulse_type = prediction.configuration.impulse_type
+    fitted = fit_double_exponential(
+        prediction.front_time_s,
+        prediction.tail_time_s,
+        prediction.crest_voltage_v,
+        impulse_type,
+    )
+    shape = fitted.shape
+    caveats = list(fitted.caveats)
+    caveats.append(
+        Caveat(
+            peak_caveat_code,
+            peak_caveat_message
+            or (
+                "The peak of this sampled curve is the independently calculated "
+                "loaded estimate N*V_stage*eta, not the requested test voltage and "
+                "not workbook E20."
+            ),
+            Severity.WARNING,
+        )
+    )
+    caveats.append(
+        Caveat(
+            "REDUCED_ORDER_NOT_FULL_CIRCUIT",
+            "model_kind is reduced_order_double_exponential. Topology is not "
+            "specified well enough for an ODE Marx model. This is not a "
+            "laboratory waveform.",
+            Severity.WARNING,
+        )
+    )
+    if impulse_type is ImpulseType.SWITCHING:
+        caveats.append(
+            Caveat(
+                "SWITCHING_E18_IS_NOT_TP",
+                "Workbook E18 still applies the lightning 1.67 construction to "
+                "switching scalars. Extracted switching time on this curve is Tp.",
+                Severity.WARNING,
+            )
+        )
+
+    chopped = None
+    if chopping_time_s is not None:
+        if collapse_duration_s is None or collapse_shape is None:
+            raise ValueError(
+                "Chopped lightning requires chopping_time_s, collapse_duration_s "
+                "and collapse_shape. They are not defaulted."
+            )
+        chopped = build_chopped_lightning(
+            shape,
+            chopping_time_s=chopping_time_s,
+            collapse_duration_s=collapse_duration_s,
+            collapse_shape=collapse_shape,
+        )
+        caveats.extend(chopped.caveats)
+
+    duration = max(prediction.tail_time_s * 3.0, shape.time_to_peak_s * 20.0, 1e-6)
+    voltage_at = shape.voltage_at
+    if chopped is not None:
+        duration = max(duration, chopped.collapse_end_s * 1.5)
+        time_s, voltage_v = chopped.sample(duration, points=sample_points)
+        voltage_at = chopped.voltage_at
+    else:
+        time_s, voltage_v = shape.sample(duration, points=sample_points)
+
+    t30 = _crossing_on_rise(shape, 0.30 * shape.peak_voltage_v)
+    t90 = _crossing_on_rise(shape, 0.90 * shape.peak_voltage_v)
+    t50 = _crossing_on_tail(shape, 0.50 * shape.peak_voltage_v)
+    origin = _virtual_origin(shape)
+    inject = [shape.time_to_peak_s, t30, t90, t50]
+    if chopped is not None:
+        inject.extend([chopping_time_s, chopped.collapse_end_s])
+    time_s, voltage_v = _inject_times(time_s, voltage_v, inject, voltage_at)
+    time_s, voltage_v = _downsample(
+        time_s, voltage_v, api_points, keep_times_s=tuple(t for t in inject if t is not None)
+    )
+    sample_max = float(np.max(voltage_v))
+    peak_index = int(np.argmax(voltage_v))
+    peak_time_s = float(time_s[peak_index])
+
+    unavailable: list[str] = []
+    crest_v = prediction.crest_voltage_v
+    front_time_s: float | None
+    tail_time_s: float | None
+
+    if chopped is not None and chopping_time_s < shape.time_to_peak_s:
+        crest_v = chopped.voltage_at_chop_v
+        if chopping_time_s < _crossing_on_rise(shape, 0.90 * shape.peak_voltage_v):
+            unavailable.extend(["front_time", "tail_time"])
+            front_time_s = None
+            tail_time_s = None
+        else:
+            front_time_s = extract_front_time(shape)
+            unavailable.append("tail_time")
+            tail_time_s = None
+    elif chopped is not None:
+        front_time_s = _extract_front_for(shape, impulse_type)
+        tail_half = _crossing_on_tail(shape, 0.50 * shape.peak_voltage_v)
+        if chopping_time_s < tail_half:
+            unavailable.append("tail_time")
+            tail_time_s = None
+        else:
+            tail_time_s = extract_tail_time(shape)
+        crest_v = shape.peak_voltage_v
+    else:
+        front_time_s = _extract_front_for(shape, impulse_type)
+        tail_time_s = extract_tail_time(shape)
+        t30 = _crossing_on_rise(shape, 0.30 * shape.peak_voltage_v)
+        t90 = _crossing_on_rise(shape, 0.90 * shape.peak_voltage_v)
+        t50 = _crossing_on_tail(shape, 0.50 * shape.peak_voltage_v)
+        origin = _virtual_origin(shape)
+
+    sample_front = None
+    sample_tail = None
+    if "front_time" not in unavailable:
+        if impulse_type is ImpulseType.SWITCHING and chopped is None:
+            sample_front = peak_time_s
+        else:
+            s30 = _interpolated_crossing(time_s, voltage_v, 0.30 * crest_v, rising=True)
+            s90 = _interpolated_crossing(time_s, voltage_v, 0.90 * crest_v, rising=True)
+            if s30 is None or s90 is None:
+                unavailable.append("front_time")
+                front_time_s = None
+            else:
+                sample_front = FRONT_TIME_DEFINITION_FACTOR * (s90 - s30)
+                t30 = t30 if t30 is not None else s30
+                t90 = t90 if t90 is not None else s90
+    if "tail_time" not in unavailable:
+        s50 = _interpolated_crossing(time_s, voltage_v, 0.50 * crest_v, rising=False)
+        if s50 is None:
+            unavailable.append("tail_time")
+            tail_time_s = None
+        else:
+            origin_s = origin if origin is not None else (
+                (t30 - 0.5 * (t90 - t30)) if t30 is not None and t90 is not None else 0.0
+            )
+            sample_tail = s50 - origin_s
+            t50 = s50
+
+    checks = {
+        "sample_max_vs_crest": _rel_err(sample_max, crest_v),
+        "extracted_front_vs_workbook": (
+            _rel_err(front_time_s, prediction.front_time_s)
+            if front_time_s is not None and chopped is None
+            else 0.0
+        ),
+        "extracted_tail_vs_workbook": (
+            _rel_err(tail_time_s, prediction.tail_time_s)
+            if tail_time_s is not None and chopped is None
+            else 0.0
+        ),
+        "sample_front_vs_extracted": (
+            _rel_err(sample_front, front_time_s)
+            if sample_front is not None and front_time_s is not None
+            else 0.0
+        ),
+        "sample_tail_vs_extracted": (
+            _rel_err(sample_tail, tail_time_s)
+            if sample_tail is not None and tail_time_s is not None
+            else 0.0
+        ),
+    }
+    consistency_ok = all(float(v) <= _CONSISTENCY_REL for v in checks.values()) and fitted.converged
+    if not consistency_ok:
+        caveats.append(
+            Caveat(
+                "WAVEFORM_INCONSISTENT",
+                "Sampled crest or extracted times disagree with the reported "
+                f"values beyond {_CONSISTENCY_REL:.2%} relative. The curve is "
+                "not returned as a consistent prediction.",
+                Severity.BLOCKING,
+            )
+        )
+
+    return RealizedWaveform(
+        time_s=time_s,
+        voltage_v=voltage_v,
+        model_kind=MODEL_KIND,
+        model_id=model_id,
+        crest_v=crest_v,
+        peak_time_s=peak_time_s if chopped is None else (
+            shape.time_to_peak_s if chopping_time_s > shape.time_to_peak_s else chopping_time_s
+        ),
+        front_time_s=front_time_s,
+        tail_time_s=tail_time_s,
+        workbook_front_time_s=prediction.front_time_s,
+        workbook_tail_time_s=prediction.tail_time_s,
+        t30_s=t30,
+        t90_s=t90,
+        t50_s=t50,
+        virtual_origin_s=origin,
+        unavailable=tuple(dict.fromkeys(unavailable)),
+        consistency_ok=consistency_ok,
+        consistency={**checks, "ok": consistency_ok, "fit_converged": fitted.converged},
+        caveats=caveats,
+        chopped=chopped is not None,
+        impulse_type=impulse_type,
+    )
+
+
+def serialize_realized_waveform(realized: RealizedWaveform) -> dict:
+    from backend.units import v_to_kv
+
+    return {
+        "model_kind": realized.model_kind,
+        "model_id": realized.model_id,
+        "time_s": [float(x) for x in realized.time_s],
+        "voltage_v": [float(x) for x in realized.voltage_v],
+        "time_us": [s_to_us(float(x)) for x in realized.time_s],
+        "voltage_kv": [v_to_kv(float(x)) for x in realized.voltage_v],
+        "resolution": {
+            "points": int(len(realized.time_s)),
+            "duration_s": float(realized.time_s[-1]) if len(realized.time_s) else 0.0,
+        },
+        "units": {"time": "s", "voltage": "V"},
+        "assumptions": [
+            "Peak is N*V_stage*eta, not the requested voltage.",
+            "Front/tail fit targets are workbook E18/E19 approximations.",
+            "Not a full Marx transient and not a measured CPRI waveform.",
+        ],
+        "metrics": {
+            "crest_v": realized.crest_v,
+            "crest_kv": v_to_kv(realized.crest_v),
+            "peak_time_s": realized.peak_time_s,
+            "peak_time_us": s_to_us(realized.peak_time_s),
+            "front_time_s": realized.front_time_s,
+            "front_time_us": None if realized.front_time_s is None else s_to_us(realized.front_time_s),
+            "tail_time_s": realized.tail_time_s,
+            "tail_time_us": None if realized.tail_time_s is None else s_to_us(realized.tail_time_s),
+            "unavailable": list(realized.unavailable),
+        },
+        "thresholds": {
+            "thirty_percent_v": 0.30 * realized.crest_v,
+            "ninety_percent_v": 0.90 * realized.crest_v,
+            "fifty_percent_v": 0.50 * realized.crest_v,
+            "label": "Fractions of the predicted loaded crest, not of the request.",
+        },
+        "consistency": realized.consistency,
+        "chopped": realized.chopped,
+        "disclaimer": "reduced-order approximation, not a laboratory waveform",
+        "warnings": [
+            {"code": item.code, "message": item.message, "severity": item.severity.value}
+            for item in realized.caveats
+        ],
+    }

@@ -1,29 +1,24 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, fetchMetadata, fetchProfile } from "./api";
 import { AdminView } from "./components/AdminView";
+import { AnnTrainingView } from "./components/AnnTrainingView";
 import { OperatorView } from "./components/OperatorView";
 import type { Metadata, ProfileResponse } from "./types";
 
-type Role = "operator" | "admin";
+type Role = "operator" | "admin" | "training";
 
 const ROLE_STORAGE_KEY = "impulse-optimiser-role";
 
-const ROLES: { id: Role; label: string; blurb: string }[] = [
-  {
-    id: "operator",
-    label: "Test request",
-    blurb: "Describe the test object and the result you need.",
-  },
-  {
-    id: "admin",
-    label: "Generator setup",
-    blurb: "Record the equipment and the resistor store. Entered once.",
-  },
+const ROLES: { id: Role; label: string }[] = [
+  { id: "operator", label: "Test request" },
+  { id: "admin", label: "Generator setup" },
+  { id: "training", label: "Training" },
 ];
 
 function storedRole(): Role {
   const saved = localStorage.getItem(ROLE_STORAGE_KEY);
-  return saved === "admin" ? "admin" : "operator";
+  if (saved === "admin" || saved === "training") return saved;
+  return "operator";
 }
 
 export function App() {
@@ -64,22 +59,16 @@ export function App() {
   if (!metadata || !profile) {
     return (
       <main className="shell shell--centred">
-        <p className="loading">Loading generator configuration&hellip;</p>
+        <p className="loading">Loading&hellip;</p>
       </main>
     );
   }
-
-  const active = ROLES.find((item) => item.id === role) ?? ROLES[0];
 
   return (
     <div className="shell">
       <header className="masthead">
         <div>
-          <h1 className="masthead__title">Impulse Generator Setting Optimiser</h1>
-          <p className="masthead__subtitle">
-            Decision support for high-voltage impulse testing. Recommendations are for
-            engineer review and never operate equipment.
-          </p>
+          <h1 className="masthead__title">Impulse generator</h1>
         </div>
         <nav className="roles" aria-label="Interface">
           {ROLES.map((item) => (
@@ -96,14 +85,14 @@ export function App() {
         </nav>
       </header>
 
-      <p className="role__blurb">{active.blurb}</p>
-
       {role === "admin" ? (
         <AdminView
           metadata={metadata}
           profile={profile}
           onProfileChange={setProfile}
         />
+      ) : role === "training" ? (
+        <AnnTrainingView />
       ) : (
         <OperatorView
           metadata={metadata}

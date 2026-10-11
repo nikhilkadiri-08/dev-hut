@@ -1,0 +1,585 @@
+{
+  "version": "ann_residual_v2",
+  "feature_order": [
+    "is_switching",
+    "Test_kV",
+    "Load_C_pF",
+    "Divider_C_pF",
+    "Stray_C_pF",
+    "L_uH",
+    "Efficiency",
+    "Front_R_Stage",
+    "Tail_R_Stage",
+    "Physics_FrontPeak_us",
+    "Physics_Tail_us",
+    "Physics_Crest_kV"
+  ],
+  "target_order": [
+    "Residual_FrontPeak",
+    "Residual_Tail",
+    "Residual_Crest"
+  ],
+  "output_names": [
+    "front_us",
+    "tail_us",
+    "crest_kv"
+  ],
+  "train_split": "Train",
+  "synthetic_only": true,
+  "model_kind": "ann_residual_mlp",
+  "framework": "numpy_mlp",
+  "sklearn_reason": "sklearn does not import in .venv (Python 3.14; ModuleNotFoundError). The product model is a NumPy MLP.",
+  "polarity_used": false,
+  "waveform_samples_used": false,
+  "observed_columns_used_as_inputs": false,
+  "trained_on_requested_waveform": false,
+  "crest_head_applied": false,
+  "crest_residual_limitation": "Physics_Crest_kV equals Test_kV on every synthetic row (workbook E20 tautology). This head only fits scatter around that request echo. It is not applied, so the loaded crest N*V_stage*eta stays put. Beating a zero residual is not enough: there is no independent crest measurement in this file.",
+  "not_a_waveform_network": true,
+  "knn_is_benchmark_only": true,
+  "scores_are_synthetic": true,
+  "laboratory_accuracy": false,
+  "open_measured_rows_used": false,
+  "artifact_sha256": "f88b251e5386f3bba33dbb7be472c36dca6b1d07aec64b269b55b0e454f2dcec",
+  "specialists": [
+    {
+      "output": "front_us",
+      "impulse": "Lightning",
+      "active": true,
+      "reason": "validation MAE strictly better than a zero residual",
+      "hyperparams": {
+        "selection": "validation_grid",
+        "hidden_sizes": [
+          16
+        ],
+        "learning_rate": 0.003,
+        "weight_decay": 0.001,
+        "epochs_ran": 5,
+        "epochs_executed": 45,
+        "best_epoch": 5,
+        "early_stopping": "validation_mae"
+      },
+      "validation_mae": 0.006380055132047163,
+      "zero_residual_validation_mae": 0.008240545740843413,
+      "hidden_test_mae": 0.0060779373405051304,
+      "zero_residual_hidden_test_mae": 0.008665952162548169
+    },
+    {
+      "output": "front_us",
+      "impulse": "Switching",
+      "active": true,
+      "reason": "validation MAE strictly better than a zero residual",
+      "hyperparams": {
+        "selection": "validation_grid",
+        "hidden_sizes": [
+          32
+        ],
+        "learning_rate": 0.003,
+        "weight_decay": 0.0001,
+        "epochs_ran": 109,
+        "epochs_executed": 149,
+        "best_epoch": 109,
+        "early_stopping": "validation_mae"
+      },
+      "validation_mae": 1.4756979492013684,
+      "zero_residual_validation_mae": 2.013469499338483,
+      "hidden_test_mae": 1.5307047970453633,
+      "zero_residual_hidden_test_mae": 1.743967671759445
+    },
+    {
+      "output": "tail_us",
+      "impulse": "Lightning",
+      "active": true,
+      "reason": "validation MAE strictly better than a zero residual",
+      "hyperparams": {
+        "selection": "validation_grid",
+        "hidden_sizes": [
+          32
+        ],
+        "learning_rate": 0.003,
+        "weight_decay": 0.001,
+        "epochs_ran": 3,
+        "epochs_executed": 43,
+        "best_epoch": 3,
+        "early_stopping": "validation_mae"
+      },
+      "validation_mae": 0.5763769654666818,
+      "zero_residual_validation_mae": 0.687652498761937,
+      "hidden_test_mae": 0.5717018483874644,
+      "zero_residual_hidden_test_mae": 0.5835427604540936
+    },
+    {
+      "output": "tail_us",
+      "impulse": "Switching",
+      "active": true,
+      "reason": "validation MAE strictly better than a zero residual",
+      "hyperparams": {
+        "selection": "validation_grid",
+        "hidden_sizes": [
+          32
+        ],
+        "learning_rate": 0.01,
+        "weight_decay": 0.0001,
+        "epochs_ran": 3,
+        "epochs_executed": 43,
+        "best_epoch": 3,
+        "early_stopping": "validation_mae"
+      },
+      "validation_mae": 21.760747525666496,
+      "zero_residual_validation_mae": 24.75727699625997,
+      "hidden_test_mae": 23.197494540874974,
+      "zero_residual_hidden_test_mae": 27.187744649800525
+    },
+    {
+      "output": "crest_kv",
+      "impulse": "Lightning",
+      "active": false,
+      "reason": "Physics_Crest_kV equals Test_kV on every synthetic row (workbook E20 tautology). This head only fits scatter around that request echo. It is not applied, so the loaded crest N*V_stage*eta stays put. Beating a zero residual is not enough: there is no independent crest measurement in this file.",
+      "hyperparams": {
+        "selection": "validation_grid",
+        "hidden_sizes": [
+          16,
+          8
+        ],
+        "learning_rate": 0.01,
+        "weight_decay": 0.001,
+        "epochs_ran": 12,
+        "epochs_executed": 52,
+        "best_epoch": 12,
+        "early_stopping": "validation_mae"
+      },
+      "validation_mae": 4.352111765295146,
+      "zero_residual_validation_mae": 9.749734449355396,
+      "hidden_test_mae": 4.439029741548981,
+      "zero_residual_hidden_test_mae": 9.371419930905162
+    },
+    {
+      "output": "crest_kv",
+      "impulse": "Switching",
+      "active": false,
+      "reason": "Physics_Crest_kV equals Test_kV on every synthetic row (workbook E20 tautology). This head only fits scatter around that request echo. It is not applied, so the loaded crest N*V_stage*eta stays put. Beating a zero residual is not enough: there is no independent crest measurement in this file.",
+      "hyperparams": {
+        "selection": "validation_grid",
+        "hidden_sizes": [
+          32
+        ],
+        "learning_rate": 0.003,
+        "weight_decay": 0.001,
+        "epochs_ran": 39,
+        "epochs_executed": 79,
+        "best_epoch": 39,
+        "early_stopping": "validation_mae"
+      },
+      "validation_mae": 3.201440993316263,
+      "zero_residual_validation_mae": 6.788953234656058,
+      "hidden_test_mae": 3.2117135419575487,
+      "zero_residual_hidden_test_mae": 6.665213782638967
+    }
+  ],
+  "active_heads": {
+    "front_us": {
+      "Lightning": true,
+      "Switching": true
+    },
+    "tail_us": {
+      "Lightning": true,
+      "Switching": true
+    },
+    "crest_kv": {
+      "Lightning": false,
+      "Switching": false
+    }
+  },
+  "scores": {
+    "validation": {
+      "ann": {
+        "front_us": {
+          "mae": 0.7410390021667078,
+          "rmse": 1.2531001112464042
+        },
+        "tail_us": {
+          "mae": 11.168562245566589,
+          "rmse": 17.912389641134713
+        },
+        "crest_kv": {
+          "mae": 3.776776379305704,
+          "rmse": 4.529807295595589
+        }
+      },
+      "applied": {
+        "front_us": {
+          "mae": 0.7410390021667078,
+          "rmse": 1.2531001112464042
+        },
+        "tail_us": {
+          "mae": 11.168562245566589,
+          "rmse": 17.912389641134713
+        },
+        "crest_kv": {
+          "mae": 8.269343842005727,
+          "rmse": 10.253587378935535
+        }
+      },
+      "zero_residual": {
+        "front_us": {
+          "mae": 1.010855022539663,
+          "rmse": 1.7374008844363507
+        },
+        "tail_us": {
+          "mae": 12.722464747510953,
+          "rmse": 21.56950956642897
+        },
+        "crest_kv": {
+          "mae": 8.269343842005727,
+          "rmse": 10.253587378935535
+        }
+      },
+      "weighted_knn_k7": {
+        "front_us": {
+          "mae": 0.8153730289623603,
+          "rmse": 1.3346134941786894
+        },
+        "tail_us": {
+          "mae": 12.114165288224179,
+          "rmse": 19.91351109643051
+        },
+        "crest_kv": {
+          "mae": 4.039247248702057,
+          "rmse": 4.84468736811407
+        }
+      },
+      "by_impulse": {
+        "Lightning": {
+          "n": 150,
+          "ann": {
+            "front_us": {
+              "mae": 0.006380055132047163,
+              "rmse": 0.007410041489327754
+            },
+            "tail_us": {
+              "mae": 0.5763769654666818,
+              "rmse": 0.678326277362224
+            },
+            "crest_kv": {
+              "mae": 4.352111765295146,
+              "rmse": 5.1726853260240935
+            }
+          },
+          "applied": {
+            "front_us": {
+              "mae": 0.006380055132047163,
+              "rmse": 0.007410041489327754
+            },
+            "tail_us": {
+              "mae": 0.5763769654666818,
+              "rmse": 0.678326277362224
+            },
+            "crest_kv": {
+              "mae": 9.749734449355396,
+              "rmse": 11.79789759443722
+            }
+          },
+          "zero_residual": {
+            "front_us": {
+              "mae": 0.008240545740843413,
+              "rmse": 0.010095226106354927
+            },
+            "tail_us": {
+              "mae": 0.687652498761937,
+              "rmse": 0.8458529016626763
+            },
+            "crest_kv": {
+              "mae": 9.749734449355396,
+              "rmse": 11.79789759443722
+            }
+          },
+          "weighted_knn_k7": {
+            "front_us": {
+              "mae": 0.007091942196047114,
+              "rmse": 0.008221186945747572
+            },
+            "tail_us": {
+              "mae": 0.6392913976528841,
+              "rmse": 0.7301953694540935
+            },
+            "crest_kv": {
+              "mae": 4.747664893121316,
+              "rmse": 5.593285057550216
+            }
+          }
+        },
+        "Switching": {
+          "n": 150,
+          "ann": {
+            "front_us": {
+              "mae": 1.4756979492013684,
+              "rmse": 1.772135680160136
+            },
+            "tail_us": {
+              "mae": 21.760747525666496,
+              "rmse": 25.32286079362086
+            },
+            "crest_kv": {
+              "mae": 3.201440993316263,
+              "rmse": 3.7791050247905327
+            }
+          },
+          "applied": {
+            "front_us": {
+              "mae": 1.4756979492013684,
+              "rmse": 1.772135680160136
+            },
+            "tail_us": {
+              "mae": 21.760747525666496,
+              "rmse": 25.32286079362086
+            },
+            "crest_kv": {
+              "mae": 6.788953234656058,
+              "rmse": 8.430997605627972
+            }
+          },
+          "zero_residual": {
+            "front_us": {
+              "mae": 2.013469499338483,
+              "rmse": 2.4570351549968286
+            },
+            "tail_us": {
+              "mae": 24.75727699625997,
+              "rmse": 30.49216323485906
+            },
+            "crest_kv": {
+              "mae": 6.788953234656058,
+              "rmse": 8.430997605627972
+            }
+          },
+          "weighted_knn_k7": {
+            "front_us": {
+              "mae": 1.6236541157286735,
+              "rmse": 1.8874105991471235
+            },
+            "tail_us": {
+              "mae": 23.58903917879547,
+              "rmse": 28.152489465369662
+            },
+            "crest_kv": {
+              "mae": 3.3308296042827985,
+              "rmse": 3.956912136314571
+            }
+          }
+        }
+      }
+    },
+    "hidden_test": {
+      "ann": {
+        "front_us": {
+          "mae": 0.7683913671929342,
+          "rmse": 1.2839609939824839
+        },
+        "tail_us": {
+          "mae": 11.88459819463122,
+          "rmse": 18.7809303153952
+        },
+        "crest_kv": {
+          "mae": 3.825371641753265,
+          "rmse": 4.591392533037692
+        }
+      },
+      "applied": {
+        "front_us": {
+          "mae": 0.7683913671929342,
+          "rmse": 1.2839609939824839
+        },
+        "tail_us": {
+          "mae": 11.88459819463122,
+          "rmse": 18.7809303153952
+        },
+        "crest_kv": {
+          "mae": 8.018316856772065,
+          "rmse": 10.058906016202585
+        }
+      },
+      "zero_residual": {
+        "front_us": {
+          "mae": 0.8763168119609968,
+          "rmse": 1.53511867625159
+        },
+        "tail_us": {
+          "mae": 13.885643705127308,
+          "rmse": 22.985243470715684
+        },
+        "crest_kv": {
+          "mae": 8.018316856772065,
+          "rmse": 10.058906016202585
+        }
+      },
+      "weighted_knn_k7": {
+        "front_us": {
+          "mae": 0.7904723645314085,
+          "rmse": 1.3191103951836836
+        },
+        "tail_us": {
+          "mae": 12.508073879995049,
+          "rmse": 20.811163944355755
+        },
+        "crest_kv": {
+          "mae": 4.152416450753236,
+          "rmse": 5.058746163206489
+        }
+      },
+      "by_impulse": {
+        "Lightning": {
+          "n": 150,
+          "ann": {
+            "front_us": {
+              "mae": 0.0060779373405051304,
+              "rmse": 0.007115685501972976
+            },
+            "tail_us": {
+              "mae": 0.5717018483874644,
+              "rmse": 0.6648113318941469
+            },
+            "crest_kv": {
+              "mae": 4.439029741548981,
+              "rmse": 5.263629083762569
+            }
+          },
+          "applied": {
+            "front_us": {
+              "mae": 0.0060779373405051304,
+              "rmse": 0.007115685501972976
+            },
+            "tail_us": {
+              "mae": 0.5717018483874644,
+              "rmse": 0.6648113318941469
+            },
+            "crest_kv": {
+              "mae": 9.371419930905162,
+              "rmse": 11.600187653277978
+            }
+          },
+          "zero_residual": {
+            "front_us": {
+              "mae": 0.008665952162548169,
+              "rmse": 0.010289532104858194
+            },
+            "tail_us": {
+              "mae": 0.5835427604540936,
+              "rmse": 0.7316503578966747
+            },
+            "crest_kv": {
+              "mae": 9.371419930905162,
+              "rmse": 11.600187653277978
+            }
+          },
+          "weighted_knn_k7": {
+            "front_us": {
+              "mae": 0.006799007440972502,
+              "rmse": 0.008006343047304564
+            },
+            "tail_us": {
+              "mae": 0.5663723119565541,
+              "rmse": 0.6658161565220052
+            },
+            "crest_kv": {
+              "mae": 5.090884848134885,
+              "rmse": 5.978513422837249
+            }
+          }
+        },
+        "Switching": {
+          "n": 150,
+          "ann": {
+            "front_us": {
+              "mae": 1.5307047970453633,
+              "rmse": 1.8157811088225397
+            },
+            "tail_us": {
+              "mae": 23.197494540874974,
+              "rmse": 26.551924843906246
+            },
+            "crest_kv": {
+              "mae": 3.2117135419575487,
+              "rmse": 3.8021020046071055
+            }
+          },
+          "applied": {
+            "front_us": {
+              "mae": 1.5307047970453633,
+              "rmse": 1.8157811088225397
+            },
+            "tail_us": {
+              "mae": 23.197494540874974,
+              "rmse": 26.551924843906246
+            },
+            "crest_kv": {
+              "mae": 6.665213782638967,
+              "rmse": 8.234004304973993
+            }
+          },
+          "zero_residual": {
+            "front_us": {
+              "mae": 1.743967671759445,
+              "rmse": 2.170961267706527
+            },
+            "tail_us": {
+              "mae": 27.187744649800525,
+              "rmse": 32.49780796561432
+            },
+            "crest_kv": {
+              "mae": 6.665213782638967,
+              "rmse": 8.234004304973993
+            }
+          },
+          "weighted_knn_k7": {
+            "front_us": {
+              "mae": 1.5741457216218444,
+              "rmse": 1.8654866303016797
+            },
+            "tail_us": {
+              "mae": 24.44977544803355,
+              "rmse": 29.42389808103984
+            },
+            "crest_kv": {
+              "mae": 3.213948053371587,
+              "rmse": 3.9292750909636753
+            }
+          }
+        }
+      }
+    },
+    "n_train": 1400,
+    "n_validation": 300,
+    "n_hidden_test": 300,
+    "crest_note": "Physics_Crest_kV equals Test_kV on every synthetic row (workbook E20 tautology). This head only fits scatter around that request echo. It is not applied, so the loaded crest N*V_stage*eta stays put. Beating a zero residual is not enough: there is no independent crest measurement in this file.",
+    "open_measured_rows_used": false,
+    "open_measured_rows_note": "data/literature/open_references.json is cited typical values, not a table of measured front/tail/crest rows in the synthetic schema. No compatible open measured rows are in the repo. Training uses the synthetic Train split only.",
+    "scores_are_synthetic": true,
+    "laboratory_accuracy": false,
+    "active_heads": {
+      "front_us": {
+        "Lightning": true,
+        "Switching": true
+      },
+      "tail_us": {
+        "Lightning": true,
+        "Switching": true
+      },
+      "crest_kv": {
+        "Lightning": false,
+        "Switching": false
+      }
+    },
+    "selection": {
+      "split": "Validation",
+      "criterion": "mae_strictly_less_than_zero_residual",
+      "mode": "validation_grid",
+      "hidden_test_used_for_hyperparameters": false,
+      "hidden_test_ship_veto": true,
+      "ship_veto_rule": "validation MAE beat zero residual, but the one-shot hidden-test MAE did not. Not applied. Hyperparameters were not retuned on hidden test.",
+      "separate_impulse_heads": true,
+      "separate_impulse_reason": "Lightning and switching residuals differ by about two orders of magnitude. A pooled network can lower average MAE by fitting switching and still make the lightning residual worse than predicting zero."
+    },
+    "framework": "numpy_mlp",
+    "sklearn_reason": "sklearn does not import in .venv (Python 3.14; ModuleNotFoundError). The product model is a NumPy MLP."
+  }
+}

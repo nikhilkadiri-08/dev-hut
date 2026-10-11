@@ -48,8 +48,7 @@ export function InventoryPicker({
         })}
       </div>
       <p className="inventory__note">
-        {selected.length} of {stock.length} values marked available. Deselect a value to
-        simulate it being out of service.
+        {selected.length} of {stock.length} selected.
       </p>
     </fieldset>
   );

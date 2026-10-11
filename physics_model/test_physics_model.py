@@ -68,6 +68,7 @@ from physics_model import (
     extract_tail_time,
     extract_time_to_peak,
     fit_double_exponential,
+    realize_impulse,
     front_time,
     front_time_floor,
     front_time_is_reachable,
@@ -833,6 +834,108 @@ def test_waveform_sampling_returns_a_monotone_time_base_starting_at_zero():
     assert all(b >= a for a, b in zip(t, t[1:]))
     assert v[0] == pytest.approx(0.0)
     assert v.max() == pytest.approx(shape.peak_voltage_v, rel=1e-3)
+
+
+def test_analytical_double_exponential_peak_is_closed_form():
+    """v(t)=A(e^{-t/τt}-e^{-t/τf}); peak from dv/dt=0, not from the extractor."""
+    amplitude = 2.0e6
+    tau_front = 0.4e-6
+    tau_tail = 68.2e-6
+    t_peak = (tau_front * tau_tail / (tau_tail - tau_front)) * math.log(tau_tail / tau_front)
+    expected = amplitude * (
+        math.exp(-t_peak / tau_tail) - math.exp(-t_peak / tau_front)
+    )
+    shape = DoubleExponential(amplitude, tau_front, tau_tail)
+    assert shape.time_to_peak_s == pytest.approx(t_peak, rel=1e-12)
+    assert shape.peak_voltage_v == pytest.approx(expected, rel=1e-12)
+
+
+def test_iec_t1_on_a_known_shape_matches_thirty_ninety_definition():
+    import numpy as np
+
+    shape = DoubleExponential(1.0e6, 0.4e-6, 68.2e-6)
+    times = np.linspace(0.0, shape.time_to_peak_s, 250_000)
+    volts = shape.amplitude_v * (
+        np.exp(-times / shape.tau_tail_s) - np.exp(-times / shape.tau_front_s)
+    )
+    t30 = float(np.interp(0.30 * shape.peak_voltage_v, volts, times))
+    t90 = float(np.interp(0.90 * shape.peak_voltage_v, volts, times))
+    expected_t1 = 1.67 * (t90 - t30)
+    assert extract_front_time(shape) == pytest.approx(expected_t1, rel=2e-4)
+
+
+def test_fifty_percent_voltage_level_is_not_the_tail_crossing():
+    configuration = GeneratorConfiguration(
+        stages=9,
+        charging_voltage_per_stage_v=kv_to_v(150.0),
+        front_resistance_per_stage_ohm=50.0,
+        tail_resistance_per_stage_ohm=25.0,
+        impulse_type=ImpulseType.LIGHTNING,
+        circuit=WORKBOOK_EXAMPLE_CIRCUIT,
+        ratings=WORKBOOK_EXAMPLE_RATINGS,
+    )
+    prediction = predict(configuration, EXAMPLE_V)
+    realized = realize_impulse(prediction)
+    half_request_v = 0.50 * EXAMPLE_V
+    half_crest_v = 0.50 * prediction.crest_voltage_v
+    assert half_request_v != pytest.approx(half_crest_v)
+    assert realized.crest_v == pytest.approx(prediction.crest_voltage_v)
+    assert 0.50 * realized.crest_v == pytest.approx(half_crest_v)
+    assert realized.t50_s is not None
+
+
+def test_realized_sample_max_matches_loaded_crest():
+    configuration = GeneratorConfiguration(
+        stages=9,
+        charging_voltage_per_stage_v=kv_to_v(150.0),
+        front_resistance_per_stage_ohm=50.0,
+        tail_resistance_per_stage_ohm=25.0,
+        impulse_type=ImpulseType.LIGHTNING,
+        circuit=WORKBOOK_EXAMPLE_CIRCUIT,
+        ratings=WORKBOOK_EXAMPLE_RATINGS,
+    )
+    prediction = predict(configuration, EXAMPLE_V)
+    realized = realize_impulse(prediction)
+    assert realized.consistency_ok
+    assert float(max(realized.voltage_v)) == pytest.approx(realized.crest_v, rel=2e-3)
+    assert realized.crest_v == pytest.approx(prediction.crest_voltage_v, rel=1e-12)
+    assert realized.crest_v != pytest.approx(prediction.workbook_echo_voltage_v)
+    assert realized.front_time_s == pytest.approx(prediction.front_time_s, rel=2e-3)
+    assert realized.tail_time_s == pytest.approx(prediction.tail_time_s, rel=2e-3)
+    assert realized.model_kind == "reduced_order_double_exponential"
+
+
+def test_realized_lightning_samples_include_the_rising_front():
+    """The record must start well below the crest and cross 30% and 90% before the peak."""
+    realized = realize_impulse(predict(example_configuration(), EXAMPLE_V))
+    crest = realized.crest_v
+    voltages = [float(value) for value in realized.voltage_v]
+    assert voltages[0] < 0.05 * crest
+    peak_index = max(range(len(voltages)), key=voltages.__getitem__)
+    assert peak_index > 0
+    assert any(
+        voltages[index - 1] < 0.30 * crest <= voltages[index]
+        for index in range(1, peak_index + 1)
+    )
+    assert any(
+        voltages[index - 1] < 0.90 * crest <= voltages[index]
+        for index in range(1, peak_index + 1)
+    )
+
+
+def test_chopped_before_the_front_makes_metrics_unavailable():
+    prediction = predict(example_configuration(), EXAMPLE_V)
+    realized = realize_impulse(
+        prediction,
+        chopping_time_s=0.2e-6,
+        collapse_duration_s=0.2e-6,
+        collapse_shape="linear",
+    )
+    assert "front_time" in realized.unavailable
+    assert "tail_time" in realized.unavailable
+    assert realized.front_time_s is None
+    assert realized.tail_time_s is None
+    assert realized.chopped
 
 
 # --------------------------------------------------------------------------- #

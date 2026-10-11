@@ -1,9 +1,9 @@
 import type { Issue, Severity } from "../types";
 
 const HEADINGS: Record<Severity, string> = {
-  error: "Blocking problems",
-  warning: "Reduced confidence",
-  notice: "Worth knowing",
+  error: "Errors",
+  warning: "Warnings",
+  notice: "Notes",
 };
 
 export function IssueList({ severity, issues }: { severity: Severity; issues: Issue[] }) {
